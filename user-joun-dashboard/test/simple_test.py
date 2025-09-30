@@ -20,7 +20,7 @@ def test_user_segmentation_edge_cases():
     
     # Import the function
     try:
-        from  import perform_user_segmentation
+        from main import perform_user_segmentation
         print("✅ Successfully imported perform_user_segmentation")
     except ImportError as e:
         print(f"❌ Import failed: {e}")
@@ -121,7 +121,7 @@ def test_anomaly_detection_edge_cases():
     print("\n🔍 Testing Anomaly Detection Edge Cases...")
     
     try:
-        from  import detect_anomalies
+        from main import detect_anomalies
         print("✅ Successfully imported detect_anomalies")
     except ImportError as e:
         print(f"❌ Import failed: {e}")

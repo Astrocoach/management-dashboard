@@ -7,7 +7,7 @@ import pandas as pd
 import sys
 import os
 import io
-from  import load_and_process_csv
+from main import load_and_process_csv
 
 class MockStreamlitFile:
     """Mock Streamlit uploaded file object"""
