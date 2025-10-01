@@ -1,0 +1,45 @@
+{
+  "execution_info": {
+    "start_time": "2025-10-01T18:17:41.679776",
+    "end_time": "2025-10-01T18:17:43.063739",
+    "duration_seconds": 1.383963
+  },
+  "summary": {
+    "total_tests": 29,
+    "total_failures": 3,
+    "total_errors": 0,
+    "overall_success_rate": 89.65517241379311
+  },
+  "test_suites": {
+    "Comprehensive Tests": {
+      "total_tests": 16,
+      "success_rate": 93.75,
+      "failures": 1,
+      "errors": 0,
+      "failure_details": [
+        {
+          "test": "test_dropoff_destination_tracking",
+          "error": "unexpectedly None"
+        }
+      ],
+      "error_details": []
+    },
+    "Validation Scenarios": {
+      "total_tests": 13,
+      "success_rate": 84.61538461538461,
+      "failures": 2,
+      "errors": 0,
+      "failure_details": [
+        {
+          "test": "test_missing_userid_handling",
+          "error": "unexpectedly None : Should handle missing userids"
+        },
+        {
+          "test": "test_unicode_and_special_characters",
+          "error": "unexpectedly None : Should handle unicode and special characters"
+        }
+      ],
+      "error_details": []
+    }
+  }
+}

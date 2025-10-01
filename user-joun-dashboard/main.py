@@ -4,13 +4,119 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from plotly.subplots import make_subplots
 import json
 from datetime import datetime, timedelta
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
 import warnings
+import os
+from dotenv import load_dotenv
+import hashlib
 warnings.filterwarnings('ignore')
+
+# Load environment variables
+load_dotenv()
+
+# Authentication Functions
+def check_credentials(email, password):
+    """Check if the provided credentials are valid"""
+    admin_email = os.getenv('ADMIN_EMAIL', 'admin@example.com')
+    admin_password = os.getenv('ADMIN_PASSWORD', 'your_secure_password_here')
+    
+    return email == admin_email and password == admin_password
+
+def login_page():
+    """Display the login page"""
+    # Hide sidebar and adjust main content area
+    st.markdown("""
+    <style>
+    /* Hide sidebar */
+    .css-1d391kg {display: none}
+    .css-1rs6os {display: none}
+    .css-17eq0hr {display: none}
+    section[data-testid="stSidebar"] {display: none}
+    
+    /* Adjust main content area */
+    .main .block-container {
+        padding-top: 1rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+        max-width: 100%;
+    }
+    
+    /* Login form styling */
+    .login-header {
+        text-align: center;
+        margin-bottom: 2rem;
+        padding: 2rem 0;
+    }
+    
+    .login-title {
+        font-size: 3rem;
+        font-weight: bold;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 0.5rem;
+    }
+    
+    .login-subtitle {
+        color: #666;
+        font-size: 1.2rem;
+    }
+    
+    
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Create login header at the top
+    st.markdown("""
+    <div class="login-header">
+        <div class="login-title">🔐 Login to Dashboard</div>
+        <div class="login-subtitle">Enter your credentials to access the analytics</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Create centered login form
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col2:
+        st.markdown('<div class="login-form-container">', unsafe_allow_html=True)
+        
+        with st.form("login_form"):
+            email = st.text_input("📧 Email", placeholder="Enter your email")
+            password = st.text_input("🔒 Password", type="password", placeholder="Enter your password")
+            submit_button = st.form_submit_button("🚀 Login", use_container_width=True)
+            
+            if submit_button:
+                if check_credentials(email, password):
+                    st.session_state.authenticated = True
+                    st.session_state.user_email = email
+                    st.success("✅ Login successful! Redirecting...")
+                    st.rerun()
+                else:
+                    st.error("❌ Invalid email or password. Please try again.")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+
+def logout():
+    """Logout function"""
+    st.session_state.authenticated = False
+    st.session_state.user_email = None
+    st.rerun()
+
+def check_authentication():
+    """Check if user is authenticated"""
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if not st.session_state.authenticated:
+        login_page()
+        return False
+    return True
 
 # Page Configuration
 st.set_page_config(
@@ -417,19 +523,100 @@ def create_improved_sankey_diagram(df, top_n=10, min_users=50):
     
     return fig
 
-def create_funnel_chart(df):
-    """Create conversion funnel visualization"""
-    funnel_stages = [
-        ('App Opened', ['open_SplashScreen', 'open_HomeScreen']),
-        ('Onboarding Started', ['open_WizardScreen', 'click_Onboarding_Start']),
-        ('Onboarding Completed', ['onboarding_completed']),
-        ('Paywall Viewed', ['open_PaywallScreen', 'paywall_viewed']),
-        ('Payment Success', ['payment_success'])
-    ]
+def classify_user_segments(df):
+    """Classify users into new vs existing based on onboarding behavior
+    
+    Returns:
+        dict: {
+            'new_users': set of user IDs who went through onboarding,
+            'existing_users': set of user IDs who never completed onboarding
+        }
+    """
+    # Users who completed onboarding (new users)
+    onboarded_users = set(df[df['name'] == 'onboarding_completed']['userid'])
+    
+    # Users who started onboarding but never completed (also considered new)
+    onboarding_started = set(df[df['name'].isin(['open_WizardScreen', 'click_Onboarding_Start'])]['userid'])
+    
+    # All new users (started or completed onboarding)
+    new_users = onboarded_users | onboarding_started
+    
+    # Existing users (never went through onboarding)
+    all_users = set(df['userid'])
+    existing_users = all_users - new_users
+    
+    return {
+        'new_users': new_users,
+        'existing_users': existing_users,
+        'onboarded_users': onboarded_users
+    }
+
+def filter_df_by_user_segment(df, user_segment, segment_type='new'):
+    """Filter dataframe by user segment
+    
+    Args:
+        df: Analytics dataframe
+        user_segment: Dict from classify_user_segments()
+        segment_type: 'new', 'existing', or 'all'
+    
+    Returns:
+        Filtered dataframe
+    """
+    if segment_type == 'new':
+        return df[df['userid'].isin(user_segment['new_users'])]
+    elif segment_type == 'existing':
+        return df[df['userid'].isin(user_segment['existing_users'])]
+    else:  # 'all'
+        return df
+
+def create_funnel_chart(df, segment_type='all'):
+    """Create conversion funnel visualization with user segmentation
+    
+    Args:
+        df: Analytics dataframe
+        segment_type: 'new', 'existing', or 'all'
+    """
+    # Classify users
+    user_segments = classify_user_segments(df)
+    
+    # Filter data by segment
+    filtered_df = filter_df_by_user_segment(df, user_segments, segment_type)
+    
+    if segment_type == 'new':
+        # For new users, show the complete onboarding journey
+        funnel_stages = [
+            ('App Opened', ['open_SplashScreen', 'open_HomeScreen']),
+            ('Onboarding Started', ['open_WizardScreen', 'click_Onboarding_Start']),
+            ('Onboarding Completed', ['onboarding_completed']),
+            ('Paywall Viewed', ['open_PaywallScreen', 'paywall_viewed']),
+            ('Payment Success', ['payment_success'])
+        ]
+        title_suffix = " - New Users"
+        colors = ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#43e97b']
+    elif segment_type == 'existing':
+        # For existing users, skip onboarding stages
+        funnel_stages = [
+            ('App Opened', ['open_SplashScreen', 'open_HomeScreen']),
+            ('Paywall Viewed', ['open_PaywallScreen', 'paywall_viewed']),
+            ('Payment Success', ['payment_success'])
+        ]
+        title_suffix = " - Existing Users"
+        colors = ['#667eea', '#4facfe', '#43e97b']
+    else:
+        # All users (original funnel)
+        funnel_stages = [
+            ('App Opened', ['open_SplashScreen', 'open_HomeScreen']),
+            ('Onboarding Started', ['open_WizardScreen', 'click_Onboarding_Start']),
+            ('Onboarding Completed', ['onboarding_completed']),
+            ('Paywall Viewed', ['open_PaywallScreen', 'paywall_viewed']),
+            ('Payment Success', ['payment_success'])
+        ]
+        title_suffix = " - All Users"
+        colors = ['#667eea', '#764ba2', '#f093fb', '#4facfe', '#43e97b']
     
     funnel_data = []
     for stage_name, events in funnel_stages:
-        count = df[df['name'].isin(events)]['userid'].nunique()
+        count = filtered_df[filtered_df['name'].isin(events)]['userid'].nunique()
         funnel_data.append({'Stage': stage_name, 'Users': count})
     
     funnel_df = pd.DataFrame(funnel_data)
@@ -438,16 +625,363 @@ def create_funnel_chart(df):
         y=funnel_df['Stage'],
         x=funnel_df['Users'],
         textinfo="value+percent initial",
-        marker=dict(color=['#667eea', '#764ba2', '#f093fb', '#4facfe', '#43e97b'])
+        marker=dict(color=colors[:len(funnel_stages)])
     ))
     
-    fig.update_layout(title_text="Conversion Funnel", height=500)
+    fig.update_layout(title_text=f"Conversion Funnel{title_suffix}", height=500)
     return fig
+
+def create_goal_funnel_visualization(df, session_timeout_minutes=30, top_n_dropoffs=5, segment_type='all'):
+    """Create Goal Funnel Visualization with drop-off paths (no cart stages)
+    - Dynamically builds stages based on available events
+    - Uses sessions to compute progression and drop-offs
+    - Supports user segmentation (new/existing/all users)
+    
+    Args:
+        df: Analytics dataframe
+        session_timeout_minutes: Session timeout in minutes
+        top_n_dropoffs: Number of top drop-off events to show
+        segment_type: 'new', 'existing', or 'all'
+    
+    Returns: (figure, stage_stats)
+    stage_stats: List[dict] with keys: stage, sessions, proceeded, proceeded_pct, dropoffs(list[(event,count)])
+    """
+    try:
+        if df is None or df.empty:
+            return None, []
+
+        # Ensure required columns
+        required_cols = {'userid', 'datetimeutc', 'name'}
+        if not required_cols.issubset(set(df.columns)):
+            return None, []
+
+        # Apply user segmentation filter
+        user_segments = classify_user_segments(df)
+        df = filter_df_by_user_segment(df, user_segments, segment_type)
+        
+        # Reconstruct sessions if missing
+        if 'session_id' not in df.columns:
+            try:
+                df = reconstruct_sessions(df, timeout_minutes=session_timeout_minutes)
+            except Exception:
+                # Fallback: treat each user-day as a session
+                df['date'] = pd.to_datetime(df['datetimeutc']).dt.date
+                df['session_id'] = df.groupby(['userid', 'date']).ngroup()
+
+        # Define stage mapping based on user segment
+        if segment_type == 'new':
+            # For new users, show the complete onboarding journey
+            stage_map = [
+                ('App Entry', ['open_SplashScreen', 'open_HomeScreen']),
+                ('Onboarding Started', ['open_WizardScreen', 'click_Onboarding_Start']),
+                ('Onboarding Completed', ['onboarding_completed']),
+                ('Paywall Viewed', ['open_PaywallScreen', 'paywall_viewed']),
+                ('Purchase Completed', ['payment_success'])
+            ]
+        elif segment_type == 'existing':
+            # For existing users, skip onboarding stages
+            stage_map = [
+                ('App Entry', ['open_SplashScreen', 'open_HomeScreen']),
+                ('Paywall Viewed', ['open_PaywallScreen', 'paywall_viewed']),
+                ('Purchase Completed', ['payment_success'])
+            ]
+        else:
+            # All users (original stages)
+            stage_map = [
+                ('App Entry', ['open_SplashScreen', 'open_HomeScreen']),
+                ('Onboarding Started', ['open_WizardScreen', 'click_Onboarding_Start']),
+                ('Onboarding Completed', ['onboarding_completed']),
+                ('Paywall Viewed', ['open_PaywallScreen', 'paywall_viewed']),
+                ('Purchase Completed', ['payment_success'])
+            ]
+
+        # Keep only stages that exist in data
+        available_events = set(df['name'].unique())
+        stages = [(label, events) for label, events in stage_map if any(e in available_events for e in events)]
+        if len(stages) < 2:
+            return None, []
+
+        # Sort by user-session-time
+        df_sorted = df.sort_values(['userid', 'session_id', 'datetimeutc']).copy()
+        df_sorted['event_index'] = df_sorted.groupby(['userid', 'session_id']).cumcount()
+
+        # Prepare accumulators
+        stage_stats = []
+        stage_event_sets = [set(evts) for _, evts in stages]
+
+        # Iterate sessions
+        session_groups = df_sorted.groupby(['userid', 'session_id'])
+        per_stage_sessions = [0] * len(stages)
+        per_stage_proceeded = [0] * len(stages)
+        per_stage_dropoffs = [dict() for _ in range(len(stages))]
+
+        for (_, _), g in session_groups:
+            names = g['name'].tolist()
+            # For each stage, check presence and next progression
+            for i, evset in enumerate(stage_event_sets):
+                # indices where stage event occurs
+                indices = [idx for idx, n in enumerate(names) if n in evset]
+                if not indices:
+                    continue
+                per_stage_sessions[i] += 1
+                last_idx = max(indices)
+                # progressed if any next-stage event appears after last_idx
+                progressed = False
+                next_event = None
+                if i < len(stage_event_sets) - 1:
+                    next_evset = stage_event_sets[i+1]
+                    for j in range(last_idx + 1, len(names)):
+                        if names[j] in next_evset:
+                            progressed = True
+                            break
+                        # capture first next event after stage occurrence (for drop-off path)
+                        if next_event is None:
+                            next_event = names[j]
+                # If at final stage, there's no progression check
+                if progressed:
+                    per_stage_proceeded[i] += 1
+                else:
+                    label = next_event if next_event is not None else '(exit)'
+                    per_stage_dropoffs[i][label] = per_stage_dropoffs[i].get(label, 0) + 1
+
+        # Build stats per stage
+        for i, (label, _) in enumerate(stages):
+            sessions_count = per_stage_sessions[i]
+            proceeded_count = per_stage_proceeded[i]
+            proceeded_pct = (proceeded_count / sessions_count * 100) if sessions_count > 0 else 0.0
+            # Top drop-offs
+            drop_dict = per_stage_dropoffs[i]
+            top_dropoffs = sorted(drop_dict.items(), key=lambda x: x[1], reverse=True)[:top_n_dropoffs]
+            stage_stats.append({
+                'stage': label,
+                'sessions': sessions_count,
+                'proceeded': proceeded_count,
+                'proceeded_pct': proceeded_pct,
+                'dropoffs': top_dropoffs
+            })
+
+        # Create funnel figure for sessions per stage with dynamic colors based on stage performance
+        def get_progression_color(proceeded_pct):
+            """Return color based on stage performance (progression percentage)"""
+            if proceeded_pct >= 70:
+                return '#10B981'  # Green for good stage performance
+            elif proceeded_pct >= 40:
+                return '#F59E0B'  # Orange for moderate stage performance
+            else:
+                return '#EF4444'  # Red for poor stage performance
+        
+        # Calculate colors based on stage performance (progression rates)
+        stage_colors = []
+        for s in stage_stats:
+            stage_colors.append(get_progression_color(s['proceeded_pct']))
+        
+        fig = go.Figure(go.Funnel(
+            y=[s['stage'] for s in stage_stats],
+            x=[s['sessions'] for s in stage_stats],
+            textinfo="value+percent initial",
+            marker=dict(color=stage_colors)
+        ))
+
+        # Add drop-off annotations and summaries
+        for idx, s in enumerate(stage_stats):
+            dropped_count = max(s['sessions'] - s['proceeded'], 0)
+            dropped_pct = (dropped_count / s['sessions'] * 100) if s['sessions'] > 0 else 0
+            drop_text = "\n".join([f"{name}: {count}" for name, count in s['dropoffs']]) if s['dropoffs'] else "No drop-offs"
+            annot = f"Users Dropped: {dropped_count} ({dropped_pct:.1f}%)\nTop drop-offs:\n{drop_text}"
+            fig.add_annotation(
+                xref='paper', yref='y', x=1.02, y=s['stage'],
+                text=annot, showarrow=False, align='left',
+                font=dict(size=11), bordercolor='lightgray', borderwidth=1, borderpad=6,
+                bgcolor='rgba(255,255,255,0.8)'
+            )
+
+        fig.update_layout(
+            title_text="Goal Funnel Visualization (Drop-off Paths)",
+            height=600, margin=dict(l=80, r=250, t=60, b=40),
+            paper_bgcolor='white'
+        )
+
+        return fig, stage_stats
+    except Exception as e:
+        # Return a basic info figure on error
+        info_fig = go.Figure()
+        info_fig.update_layout(title_text=f"Goal Funnel Visualization Error: {str(e)}")
+        return info_fig, []
+
+def create_goal_funnel_ga_style(df, session_timeout_minutes=30, top_n_dropoffs=5, annotation_mode="Standard", segment_type='all'):
+    """Create a Google Analytics-style Goal Funnel with clear exits table.
+    Layout:
+    - Left: clean funnel bars with sessions per stage
+    - Right: per-stage exit table (top drop-offs)
+    Color scheme: green for progression, soft reds for exits.
+    Supports user segmentation (new/existing/all users).
+    """
+    fig = None
+    stage_stats = []
+    try:
+        # Reuse computation from goal funnel, but keep output clean
+        base_fig, base_stats = create_goal_funnel_visualization(df, session_timeout_minutes, top_n_dropoffs, segment_type)
+        stage_stats = base_stats
+        if not stage_stats:
+            return None, []
+
+        # Compute missing stage events against expected mapping to highlight gaps
+        stage_map = [
+            ('App Entry', ['open_SplashScreen', 'open_HomeScreen']),
+            ('Onboarding Started', ['open_WizardScreen', 'click_Onboarding_Start']),
+            ('Onboarding Completed', ['onboarding_completed']),
+            ('Paywall Viewed', ['open_PaywallScreen', 'paywall_viewed']),
+            ('Purchase Completed', ['payment_success'])
+        ]
+        available_events = set(df['name'].unique()) if 'name' in df.columns else set()
+        missing_stages = [label for label, events in stage_map if not any(e in available_events for e in events)]
+
+        # Build exit rows for table
+        def tidy_label(name):
+            if name is None:
+                return ''
+            name = str(name)
+            if name == '(exit)':
+                return '(exit)'
+            return name.replace('open_', '').replace('click_', '').replace('_', ' ')[:32]
+
+        exit_rows = []
+        for s in stage_stats:
+            if s['dropoffs']:
+                for ev, cnt in s['dropoffs'][:top_n_dropoffs]:
+                    exit_rows.append([s['stage'], tidy_label(ev), cnt])
+            else:
+                exit_rows.append([s['stage'], '(no drop-offs)', 0])
+
+        # Prepare funnel data
+        stages = [s['stage'] for s in stage_stats]
+        stage_sessions = [s['sessions'] for s in stage_stats]
+
+        # Create subplots: funnel (xy) + table
+        fig = make_subplots(
+            rows=1, cols=2, column_widths=[0.55, 0.45],
+            specs=[[{"type": "xy"}, {"type": "table"}]],
+            horizontal_spacing=0.12
+        )
+
+        # Funnel on the left with dynamic colors based on progression rates
+        def get_progression_color_ga(proceeded_pct):
+            """Return color based on progression percentage for GA-style funnel"""
+            if proceeded_pct >= 70:
+                return '#D1FAE5'  # Light green for good progression
+            elif proceeded_pct >= 40:
+                return '#FEF3C7'  # Light yellow for moderate progression
+            else:
+                return '#FEE2E2'  # Light red for poor progression
+        
+        def get_border_color_ga(proceeded_pct):
+            """Return border color based on progression percentage"""
+            if proceeded_pct >= 70:
+                return '#10B981'  # Green border for good progression
+            elif proceeded_pct >= 40:
+                return '#F59E0B'  # Orange border for moderate progression
+            else:
+                return '#EF4444'  # Red border for poor progression
+        
+        # Calculate colors based on progression rates
+        stage_colors_ga = []
+        border_colors_ga = []
+        for s in stage_stats:
+            stage_colors_ga.append(get_progression_color_ga(s['proceeded_pct']))
+            border_colors_ga.append(get_border_color_ga(s['proceeded_pct']))
+        
+        fig.add_trace(go.Funnel(
+            y=stages,
+            x=stage_sessions,
+            textinfo="value+percent initial",
+            marker=dict(color=stage_colors_ga, line=dict(color=border_colors_ga, width=2))
+        ), row=1, col=1)
+
+        # Add drop-off annotations (controlled by annotation_mode)
+        if annotation_mode in ["Standard", "Detailed"]:
+            for s in stage_stats:
+                dropped_count = max(s['sessions'] - s['proceeded'], 0)
+                dropped_pct = (dropped_count / s['sessions'] * 100) if s['sessions'] > 0 else 0
+                drop_text = f"Users Dropped: {dropped_count} ({dropped_pct:.1f}%)"
+                
+                # Dynamic annotation colors based on drop-off rate (inverse of progression)
+                if dropped_pct <= 30:  # Low drop-off (good)
+                    font_color = '#065F46'  # Dark green
+                    bg_color = 'rgba(209,250,229,0.6)'  # Light green
+                    border_color = '#10B981'  # Green
+                elif dropped_pct <= 60:  # Moderate drop-off
+                    font_color = '#92400E'  # Dark orange
+                    bg_color = 'rgba(254,243,199,0.6)'  # Light yellow
+                    border_color = '#F59E0B'  # Orange
+                else:  # High drop-off (bad)
+                    font_color = '#7F1D1D'  # Dark red
+                    bg_color = 'rgba(254,226,226,0.6)'  # Light red
+                    border_color = '#EF4444'  # Red
+                
+                fig.add_annotation(
+                    xref='paper', yref='y', x=0.30, y=s['stage'],
+                    text=drop_text, showarrow=False,
+                    font=dict(size=10, color=font_color),
+                    bgcolor=bg_color, bordercolor=border_color, borderwidth=1, borderpad=3
+                )
+
+        # Add red drop count annotations per stage (only in Detailed mode)
+        if annotation_mode == "Detailed":
+            for s in stage_stats:
+                dropped_count = max(s['sessions'] - s['proceeded'], 0)
+                drop_pct = (100.0 - s['proceeded_pct']) if s['sessions'] > 0 else 0.0
+                drop_text = f"Dropped: {dropped_count} ({drop_pct:.1f}%)"
+                fig.add_annotation(
+                    xref='paper', yref='y', x=0.37, y=s['stage'],
+                    text=drop_text, showarrow=False,
+                    font=dict(size=10, color='#7F1D1D'),
+                    bgcolor='rgba(254,226,226,0.7)', bordercolor='#DC2626', borderwidth=1, borderpad=3
+                )
+
+        # Exit table on the right
+        table_header = dict(values=['Stage', 'Exit To', 'Sessions'],
+                            fill_color='#F3F4F6', align='left', font=dict(color='#111827', size=12))
+        stage_col = [row[0] for row in exit_rows]
+        exit_col = [row[1] for row in exit_rows]
+        count_col = [row[2] for row in exit_rows]
+
+        fig.add_trace(go.Table(
+            header=table_header,
+            cells=dict(
+                values=[stage_col, exit_col, count_col],
+                align='left',
+                fill_color=[['#FFFFFF'] * len(exit_rows), ['#FEE2E2'] * len(exit_rows), ['#FECACA'] * len(exit_rows)],
+                font=dict(color=['#111827', '#7F1D1D', '#7F1D1D'], size=11)
+            )
+        ), row=1, col=2)
+
+        fig.update_layout(
+            title_text="Goal Funnel Visualization (GA-style)",
+            height=650,
+            margin=dict(l=60, r=40, t=60, b=40),
+            paper_bgcolor='white'
+        )
+
+        # Add a notice for missing stages/events
+        if missing_stages:
+            missing_text = "Missing events: " + ", ".join(missing_stages)
+            fig.add_annotation(
+                xref='paper', yref='paper', x=0.98, y=0.98,
+                text=missing_text, showarrow=False, align='right',
+                font=dict(size=12, color='#991B1B'),
+                bgcolor='rgba(254,202,202,0.9)', bordercolor='#DC2626', borderwidth=1, borderpad=6
+            )
+
+        return fig, stage_stats
+    except Exception as e:
+        info_fig = go.Figure()
+        info_fig.update_layout(title_text=f"Goal Funnel Visualization Error: {str(e)}")
+        return info_fig, stage_stats
 
 # ==================== MAIN APP ====================
 
 def main():
-    st.title("📊 User Analytics Dashboard")
+    st.title("📊 Astrocoach User Analytics Dashboard")
     st.markdown("### Comprehensive User Behavior & Revenue Analytics")
     
     # Sidebar
@@ -474,11 +1008,16 @@ def main():
         # Session Settings
         st.subheader("⏱️ Session Settings")
         session_timeout = st.slider("Session Timeout (minutes)", 10, 60, 30)
-        
+
         # Sankey Settings
         st.subheader("🔄 User Flow Settings")
         sankey_top_n = st.slider("Top Screens to Display", 5, 15, 10)
         sankey_min_users = st.slider("Min Users per Flow", 10, 200, 50)
+
+        # Funnel Settings
+        st.subheader("🔻 Funnel Settings")
+        top_n_dropoffs = st.slider("Top Drop-offs per Stage", 1, 10, 5)
+        annotation_mode = st.selectbox("Funnel Annotation Level", ["Minimal", "Standard", "Detailed"], index=1)
         
         st.divider()
         st.info("💡 Upload your CSV files to begin analysis")
@@ -602,10 +1141,103 @@ def main():
                     st.divider()
                     
                     st.subheader("Conversion Funnel")
-                    funnel_fig = create_funnel_chart(df)
-                    st.plotly_chart(funnel_fig, use_container_width=True)
+                    
+                    # User segmentation info
+                    user_segments = classify_user_segments(df)
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("New Users", len(user_segments['new_users']))
+                    with col2:
+                        st.metric("Existing Users", len(user_segments['existing_users']))
+                    with col3:
+                        st.metric("Total Users", len(user_segments['new_users']) + len(user_segments['existing_users']))
+                    
+                    # Funnel segment selector
+                    segment_option = st.selectbox(
+                        "Select User Segment for Funnel Analysis:",
+                        options=['all', 'new', 'existing'],
+                        format_func=lambda x: {
+                            'all': 'All Users (Combined)',
+                            'new': 'New Users (Went through onboarding)',
+                            'existing': 'Existing Users (Skipped onboarding)'
+                        }[x],
+                        index=0
+                    )
+                    
+                    # Display appropriate funnel based on selection
+                    if segment_option == 'all':
+                        # Show all three funnels side by side
+                        st.write("**Comparison View - All Segments**")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.write("**All Users**")
+                            funnel_fig_all = create_funnel_chart(df, 'all')
+                            st.plotly_chart(funnel_fig_all, use_container_width=True)
+                        
+                        with col2:
+                            st.write("**New Users**")
+                            funnel_fig_new = create_funnel_chart(df, 'new')
+                            st.plotly_chart(funnel_fig_new, use_container_width=True)
+                        
+                        with col3:
+                            st.write("**Existing Users**")
+                            funnel_fig_existing = create_funnel_chart(df, 'existing')
+                            st.plotly_chart(funnel_fig_existing, use_container_width=True)
+                    else:
+                        # Show single selected funnel
+                        funnel_fig = create_funnel_chart(df, segment_option)
+                        st.plotly_chart(funnel_fig, use_container_width=True)
                     
                     st.divider()
+
+                    st.subheader("Goal Funnel Visualization (Drop-off Paths)")
+                    
+                    # Goal funnel segment selector
+                    goal_segment_option = st.selectbox(
+                        "Select User Segment for Goal Funnel:",
+                        options=['all', 'new', 'existing'],
+                        format_func=lambda x: {
+                            'all': 'All Users (Combined)',
+                            'new': 'New Users (Went through onboarding)',
+                            'existing': 'Existing Users (Skipped onboarding)'
+                        }[x],
+                        index=1,  # Default to 'new' users for goal funnel
+                        key='goal_funnel_segment'
+                    )
+                    
+                    goal_fig, stage_stats = create_goal_funnel_ga_style(
+                        df,
+                        session_timeout_minutes=session_timeout,
+                        top_n_dropoffs=top_n_dropoffs,
+                        annotation_mode=annotation_mode,
+                        segment_type=goal_segment_option
+                    )
+                    if goal_fig is not None:
+                        st.plotly_chart(goal_fig, use_container_width=True)
+                    else:
+                        st.info("Insufficient data to build Goal Funnel Visualization.")
+
+                    # Stage summary table
+                    if stage_stats:
+                        summary_df = pd.DataFrame([
+                            {
+                                'Stage': s['stage'],
+                                'Sessions': s['sessions'],
+                                'Proceeded': s['proceeded'],
+                                'Proceeded %': round(s['proceeded_pct'], 1)
+                            } for s in stage_stats
+                        ])
+                        st.dataframe(summary_df, use_container_width=True)
+
+                        # Drop-off details per stage (compact expanders)
+                        for s in stage_stats:
+                            with st.expander(f"Exits from '{s['stage']}'"):
+                                if s['dropoffs']:
+                                    drop_df = pd.DataFrame(s['dropoffs'][:5], columns=['Exit To', 'Sessions'])
+                                    st.dataframe(drop_df, use_container_width=True)
+                                else:
+                                    st.write("No drop-offs recorded for this stage.")
                     
                     st.subheader("Common Event Sequences")
                     # Top event sequences
@@ -1150,4 +1782,17 @@ def main():
         st.dataframe(sample_data, use_container_width=True)
 
 if __name__ == "__main__":
-    main()
+    # Check authentication before showing dashboard
+    if check_authentication():
+        # Add logout button in sidebar
+        with st.sidebar:
+            st.divider()
+            if st.button("🚪 Logout", use_container_width=True):
+                logout()
+            
+            # Show logged in user
+            if 'user_email' in st.session_state and st.session_state.user_email:
+                st.success(f"👤 Logged in as: {st.session_state.user_email}")
+        
+        # Run main dashboard
+        main()
