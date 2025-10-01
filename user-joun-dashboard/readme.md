@@ -290,12 +290,33 @@ For issues, questions, or feature requests:
 
 ## Version History
 
-### v1.0.0 (Current)
+### v1.0.0 
 - ✅ Fixed timezone compatibility issues
 - ✅ Completely redesigned Sankey diagram
 - ✅ Added configurable user flow parameters
 - ✅ Improved error handling
 - ✅ Enhanced documentation
+
+### v1.5.0 (Current)
+- ✅ **Google Analytics Style Funnels**: Fully customizable multi-step conversion funnels with drop-off visualization
+- ✅ **User Authentication**: Secure login system with session management and role-based access
+- ✅ **Advanced Funnel Analytics**: 
+  - Time-to-convert metrics between funnel steps
+  - Segment-based funnel comparison (by platform, country, user type)
+  - Cohort-based funnel tracking over time
+  - Export funnel data with detailed drop-off reasons
+- ✅ **Enhanced User Journey**: 
+  - Loop detection and removal in user flows
+  - Improved Sankey diagram with conversion percentages
+  - Top conversion paths identification
+- ✅ **Improved Performance**: 
+  - Lazy loading for large datasets
+  - Optimized memory usage for 1M+ events
+  - Background data processing
+- ✅ **Integration Ready**: 
+  - REST API endpoints for external data sources
+  - Webhook support for real-time event streaming
+
 
 
 ---
