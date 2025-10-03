@@ -17,7 +17,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import functions from main.py
 try:
-    from  import (
+    from  main import (
         load_and_process_csv, 
         reconstruct_sessions, 
         perform_user_segmentation, 

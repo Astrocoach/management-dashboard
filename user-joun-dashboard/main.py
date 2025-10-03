@@ -7,6 +7,7 @@ from plotly.subplots import make_subplots
 from plotly.subplots import make_subplots
 import json
 from datetime import datetime, timedelta
+import time
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
@@ -14,6 +15,13 @@ import warnings
 import os
 from dotenv import load_dotenv
 import hashlib
+import requests
+import io
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib import colors
 warnings.filterwarnings('ignore')
 
 # Load environment variables
@@ -978,6 +986,425 @@ def create_goal_funnel_ga_style(df, session_timeout_minutes=30, top_n_dropoffs=5
         info_fig.update_layout(title_text=f"Goal Funnel Visualization Error: {str(e)}")
         return info_fig, stage_stats
 
+# ==================== AI SUMMARY FUNCTIONS ====================
+
+def generate_fallback_summary(data_summary):
+    """Generate a comprehensive fallback summary when AI API is unavailable"""
+    try:
+        if isinstance(data_summary, dict) and 'error' not in data_summary:
+            total_users = data_summary.get('total_users', 0)
+            total_events = data_summary.get('total_events', 0)
+            revenue = data_summary.get('revenue_total', 0)
+            avg_session = data_summary.get('avg_session_duration', 0)
+            top_events = data_summary.get('top_events', {})
+            user_segments = data_summary.get('user_segments', {})
+            
+            summary = f"""
+# Analytics Summary Report
+
+## Key Performance Insights
+- **Total Users**: {total_users:,} users tracked in the system
+- **Event Volume**: {total_events:,} total events recorded
+- **Revenue Performance**: ${revenue:,.2f} total revenue generated
+- **User Engagement**: {avg_session:.1f} minutes average session duration
+
+## User Behavior Patterns
+"""
+            
+            if top_events:
+                summary += "**Most Popular Events:**\n"
+                for event, count in list(top_events.items())[:5]:
+                    percentage = (count / total_events * 100) if total_events > 0 else 0
+                    summary += f"- {event}: {count:,} events ({percentage:.1f}%)\n"
+            
+            if user_segments:
+                high_activity = user_segments.get('high_activity', 0)
+                medium_activity = user_segments.get('medium_activity', 0)
+                low_activity = user_segments.get('low_activity', 0)
+                
+                summary += f"""
+**User Segmentation:**
+- High Activity Users: {high_activity:,} ({(high_activity/total_users*100):.1f}% of total)
+- Medium Activity Users: {medium_activity:,} ({(medium_activity/total_users*100):.1f}% of total)
+- Low Activity Users: {low_activity:,} ({(low_activity/total_users*100):.1f}% of total)
+"""
+            
+            summary += f"""
+## Revenue Analysis
+- Total Revenue: ${revenue:,.2f}
+- Average Revenue per User: ${(revenue/total_users):.2f} (if all users contributed)
+- Revenue per Event: ${(revenue/total_events):.4f} (if all events contributed)
+
+## Recommendations for Growth
+1. **User Engagement**: Focus on converting low-activity users to medium/high activity
+2. **Event Optimization**: Analyze top-performing events to replicate success patterns
+3. **Session Duration**: Work on increasing average session time through better UX
+4. **Revenue Optimization**: Identify revenue-generating events and optimize conversion funnels
+
+## Risk Areas to Monitor
+1. **User Retention**: Monitor user activity levels to prevent churn
+2. **Event Distribution**: Ensure balanced event distribution across user segments
+3. **Revenue Concentration**: Diversify revenue sources if heavily dependent on few events
+4. **Session Quality**: Address short session durations that may indicate user friction
+
+*Note: This summary was generated using built-in analytics. For AI-powered insights, please configure your DeepSeek API key.*
+"""
+            return summary
+        else:
+            return "Unable to generate summary due to data processing errors."
+            
+    except Exception as e:
+        return f"Error generating fallback summary: {str(e)}"
+
+def generate_ai_summary(data_summary):
+    """Generate AI-powered summary using DeepSeek API"""
+    try:
+        # DeepSeek API configuration
+        api_key = os.getenv('DEEPSEEK_API_KEY', '')
+        if not api_key:
+            return "Error: DEEPSEEK_API_KEY not found in environment variables"
+        
+        url = "https://api.deepseek.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Extract key metrics for detailed analysis
+        total_users = data_summary.get('total_users', 0)
+        total_events = data_summary.get('total_events', 0)
+        revenue = data_summary.get('revenue_total', 0)
+        event_analysis = data_summary.get('event_analysis', {})
+        session_analysis = data_summary.get('session_analysis', {})
+        
+        prompt = f"""
+        Analyze the following Astrocoach app analytics data and provide a comprehensive business intelligence report.
+
+        ## Core Metrics:
+        - Total Users: {total_users:,}
+        - Total Events: {total_events:,}
+        - Date Range: {data_summary.get('date_range', 'Unknown')}
+        - Revenue: ${revenue:,.2f}
+        - Average Session Duration: {data_summary.get('avg_session_duration', 0):.1f} minutes
+
+        ## Event Analysis:
+        - Unique Event Types: {event_analysis.get('unique_events', 0)}
+        - Most Common Event: {event_analysis.get('most_common_event', 'Unknown')} ({event_analysis.get('most_common_count', 0):,} occurrences)
+        - Events per User: {event_analysis.get('events_per_user', 0)}
+        - Top Events: {data_summary.get('top_events', {})}
+
+        ## Session Data:
+        {f"- Total Sessions: {session_analysis.get('total_sessions', 0):,}" if session_analysis else "- Session tracking not available"}
+        {f"- Avg Sessions per User: {session_analysis.get('avg_sessions_per_user', 0)}" if session_analysis else ""}
+        {f"- Users with Multiple Sessions: {session_analysis.get('users_with_multiple_sessions', 0):,}" if session_analysis else ""}
+
+        ## User Segmentation:
+        {data_summary.get('user_segments', {})}
+
+        ## Context:
+        This is Astrocoach, a mobile astrology app with user funnel: App Entry → Onboarding → Calendar/Predictions → Monetization.
+
+        IMPORTANT FORMATTING REQUIREMENTS:
+        - Use clean numbered sections (1., 2., 3., etc.) - NO asterisks or special characters before numbers
+        - Provide complete analysis for ALL sections below
+        - Each section must have substantial content (minimum 3-4 bullet points)
+        - Use proper markdown formatting with clear headers
+
+        Please provide a comprehensive analysis with these EXACT sections:
+
+        ## 1. Key Performance Insights
+        [Evaluate overall app health, user engagement patterns, and performance against industry benchmarks]
+
+        ## 2. User Behavior Analysis  
+        [Analyze user journey progression, engagement depth, and behavioral patterns]
+
+        ## 3. Revenue Analysis
+        [Assess monetization effectiveness, revenue opportunities, and conversion patterns]
+
+        ## 4. Growth Recommendations
+        [Provide 4-5 specific, actionable strategies for user acquisition, retention, and revenue growth]
+
+        ## 5. Risk Areas
+        [Identify 3-4 critical issues requiring immediate attention, including data quality concerns]
+
+        ## 6. Data Quality Assessment
+        [Highlight any tracking issues, anomalies, or data inconsistencies that need technical attention]
+
+        Ensure each section is complete with specific insights and actionable recommendations. Do not leave any section empty or incomplete.
+        """
+        
+        payload = {
+            "model": "deepseek-reasoner",
+            "messages": [
+                {"role": "system", "content": """You are the Chief Analytics Officer and Strategic Advisor for Astrocoach, deeply invested in the company's success and growth. You don't just analyze data—you champion Astrocoach's mission and drive actionable insights that directly impact business outcomes.
+
+## CRITICAL FORMATTING REQUIREMENTS
+
+**MANDATORY**: Your response MUST include ALL 6 sections with substantial content:
+1. Key Performance Insights (minimum 4 bullet points)
+2. User Behavior Analysis (minimum 4 bullet points)  
+3. Revenue Analysis (minimum 3 bullet points)
+4. Growth Recommendations (minimum 5 specific strategies)
+5. Risk Areas (minimum 4 critical issues)
+6. Data Quality Assessment (minimum 3 technical observations)
+
+**FORMATTING RULES**:
+- Use clean numbered headers: ## 1. Section Name (NO asterisks or special characters)
+- Each section must have substantial, specific content
+- Use bullet points with actionable insights
+- Never leave sections empty or incomplete
+- Provide concrete numbers and recommendations where possible
+
+## YOUR ROLE & MINDSET
+
+You operate with an ownership mentality. Astrocoach's success is YOUR success. You:
+- Think like a founder: every recommendation should drive measurable growth
+- Balance data-driven rigor with strategic intuition
+- Challenge assumptions and ask the hard questions
+- Prioritize actions by ROI and implementation feasibility
+- Speak with confidence backed by evidence, not corporate jargon
+
+## CORE RESPONSIBILITIES
+
+### 1. USER ANALYTICS MASTERY
+- Dissect user behavior patterns to uncover hidden growth opportunities
+- Identify friction points in user journeys and propose concrete solutions
+- Segment users intelligently to enable targeted interventions
+- Track and interpret cohort behavior, retention curves, and engagement metrics
+- Translate complex analytics into clear, actionable stories
+
+### 2. GROWTH STRATEGY EXPERTISE
+- Design and prioritize growth experiments with clear hypotheses
+- Recommend channel strategies based on CAC, LTV, and payback periods
+- Identify viral loops, referral mechanics, and organic growth levers
+- Benchmark against industry standards while innovating beyond them
+- Build growth models that forecast impact of proposed initiatives
+
+### 3. BUSINESS INTELLIGENCE
+- Connect metrics to business outcomes (revenue, retention, satisfaction)
+- Spot early warning signals in dashboards before they become problems
+- Recommend operational improvements that scale with growth
+- Quantify the business impact of product and marketing decisions
+
+## YOUR COMMUNICATION STYLE
+
+**Be Direct & Actionable**
+- Start with the "so what" - why does this insight matter?
+- Always include 2-3 specific next steps
+- Use frameworks (AARRR, RFM, cohorts) when they add clarity
+- Quantify impact: "This could increase retention by ~15%" not "This might help"
+
+**Be Honest & Transparent**
+- Call out data quality issues or limitations
+- Admit when you need more information to make a recommendation
+- Flag risks alongside opportunities
+- If something won't work for Astrocoach, say so and explain why
+
+**Be Strategic Yet Practical**
+- Think 3 moves ahead but recommend what's achievable now
+- Consider technical constraints, team bandwidth, and market timing
+- Distinguish between quick wins and long-term strategic plays
+- Always tie recommendations back to Astrocoach's growth objectives
+
+## DECISION-MAKING FRAMEWORK
+
+When analyzing any question, consider:
+1. **Impact**: What's the potential upside for Astrocoach?
+2. **Effort**: What resources and time are required?
+3. **Confidence**: How certain are we this will work?
+4. **Risk**: What could go wrong and how do we mitigate it?
+5. **Measurement**: How will we know if it's working?
+
+## OUTPUT STANDARDS
+
+Every response should:
+✓ Answer the specific question asked
+✓ Provide context that makes the answer meaningful
+✓ Include at least one actionable recommendation per section
+✓ Quantify impact where possible (even rough estimates)
+✓ Consider both short-term tactics and long-term strategy
+✓ Reference relevant metrics or KPIs
+✓ Acknowledge trade-offs or alternative approaches
+
+## FORBIDDEN BEHAVIORS
+
+Never:
+✗ Give vague advice like "consider exploring" or "it might be worth testing"
+✗ Ignore the practical constraints of a real business
+✗ Recommend best practices without adapting them to Astrocoach
+✗ Use analytics jargon without explaining what it means for the business
+✗ Provide analysis without interpretation
+✗ Suggest actions without explaining expected outcomes
+
+## YOUR MISSION
+
+Help Astrocoach make better decisions faster. Every interaction should leave the team more informed, more confident, and more equipped to drive growth. You're not just an analyst—you're a strategic partner who deeply cares about moving the needle.
+
+Remember: Good advice is specific, timely, and grounded in both data and business reality. Great advice changes behavior and drives results.
+
+Now, bring your full expertise to help Astrocoach succeed."""},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 8000,
+            "temperature": 1
+        }
+        
+        # Try with a reasonable timeout
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        
+        if response.status_code == 200:
+            result = response.json()
+            # For deepseek-reasoner, extract only the content, not the thinking process
+            message = result['choices'][0]['message']
+            if 'content' in message:
+                return message['content']
+            else:
+                # Fallback for different response structure
+                return str(message)
+        elif response.status_code == 429:
+            return "Error: Rate limit exceeded. Please try again in a few minutes."
+        elif response.status_code == 401:
+            return "Error: Invalid API key. Please check your DEEPSEEK_API_KEY."
+        elif response.status_code == 403:
+            return "Error: Access forbidden. Please check your API key permissions."
+        else:
+            return f"Error: API returned status code {response.status_code}. Response: {response.text}"
+                    
+    except requests.exceptions.Timeout:
+        return "Error: Request timed out. The API is taking too long to respond."
+    except requests.exceptions.ConnectionError:
+        return "Error: Connection failed. Please check your internet connection."
+    except Exception as e:
+        return f"Error: Unexpected error occurred: {str(e)}"
+
+def create_data_summary(df):
+    """Create a comprehensive data summary for AI analysis"""
+    try:
+        # Use correct column names from your data structure
+        user_col = 'userid' if 'userid' in df.columns else 'user_id'
+        event_col = 'name' if 'name' in df.columns else 'event_name'
+        time_col = 'datetimeutc' if 'datetimeutc' in df.columns else 'timestamp'
+        
+        summary = {
+            "total_users": len(df[user_col].unique()) if user_col in df.columns else 0,
+            "total_events": len(df),
+            "date_range": f"{df[time_col].min()} to {df[time_col].max()}" if time_col in df.columns else "Unknown",
+            "top_events": df[event_col].value_counts().head(10).to_dict() if event_col in df.columns else {},
+            "revenue_total": df['revenue'].sum() if 'revenue' in df.columns else 0,
+            "avg_session_duration": df.groupby(user_col)[time_col].apply(lambda x: (x.max() - x.min()).total_seconds() / 60).mean() if all(col in df.columns for col in [user_col, time_col]) else 0
+        }
+        
+        # Add user segmentation insights
+        if user_col in df.columns:
+            user_activity = df.groupby(user_col).size()
+            summary["user_segments"] = {
+                "high_activity": len(user_activity[user_activity > user_activity.quantile(0.8)]),
+                "medium_activity": len(user_activity[(user_activity > user_activity.quantile(0.2)) & (user_activity <= user_activity.quantile(0.8))]),
+                "low_activity": len(user_activity[user_activity <= user_activity.quantile(0.2)])
+            }
+            
+        # Add event type analysis
+        if event_col in df.columns:
+            event_counts = df[event_col].value_counts()
+            summary["event_analysis"] = {
+                "unique_events": len(event_counts),
+                "most_common_event": event_counts.index[0] if len(event_counts) > 0 else "None",
+                "most_common_count": int(event_counts.iloc[0]) if len(event_counts) > 0 else 0,
+                "events_per_user": round(len(df) / len(df[user_col].unique()), 2) if user_col in df.columns and len(df[user_col].unique()) > 0 else 0
+            }
+            
+        # Add session analysis if session_id exists
+        if 'session_id' in df.columns and user_col in df.columns:
+            session_stats = df.groupby(user_col)['session_id'].nunique()
+            summary["session_analysis"] = {
+                "total_sessions": df['session_id'].nunique(),
+                "avg_sessions_per_user": round(session_stats.mean(), 2),
+                "users_with_multiple_sessions": len(session_stats[session_stats > 1])
+            }
+        
+        return summary
+    except Exception as e:
+        return {"error": f"Error creating data summary: {str(e)}"}
+
+def generate_pdf_report(ai_summary, data_summary):
+    """Generate a PDF report with AI summary and data insights"""
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        # Title
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            spaceAfter=30,
+            textColor=colors.HexColor('#1f2937'),
+            alignment=1  # Center alignment
+        )
+        story.append(Paragraph("AI-Powered Analytics Summary", title_style))
+        story.append(Spacer(1, 20))
+        
+        # Date
+        date_style = ParagraphStyle(
+            'DateStyle',
+            parent=styles['Normal'],
+            fontSize=12,
+            textColor=colors.HexColor('#6b7280'),
+            alignment=1
+        )
+        story.append(Paragraph(f"Generated on: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}", date_style))
+        story.append(Spacer(1, 30))
+        
+        # Data Overview Section
+        story.append(Paragraph("Data Overview", styles['Heading2']))
+        
+        if isinstance(data_summary, dict) and 'error' not in data_summary:
+            data_table_data = [
+                ['Metric', 'Value'],
+                ['Total Users', f"{data_summary.get('total_users', 0):,}"],
+                ['Total Events', f"{data_summary.get('total_events', 0):,}"],
+                ['Date Range', data_summary.get('date_range', 'Unknown')],
+                ['Total Revenue', f"${data_summary.get('revenue_total', 0):,.2f}"],
+                ['Avg Session Duration', f"{data_summary.get('avg_session_duration', 0):.1f} minutes"]
+            ]
+            
+            data_table = Table(data_table_data, colWidths=[2.5*inch, 3*inch])
+            data_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f3f4f6')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1f2937')),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e5e7eb'))
+            ]))
+            story.append(data_table)
+        
+        story.append(Spacer(1, 30))
+        
+        # AI Analysis Section
+        story.append(Paragraph("AI-Powered Analysis", styles['Heading2']))
+        story.append(Spacer(1, 12))
+        
+        # Split AI summary into paragraphs
+        ai_paragraphs = ai_summary.split('\n\n')
+        for paragraph in ai_paragraphs:
+            if paragraph.strip():
+                story.append(Paragraph(paragraph.strip(), styles['Normal']))
+                story.append(Spacer(1, 12))
+        
+        # Build PDF
+        doc.build(story)
+        buffer.seek(0)
+        return buffer
+        
+    except Exception as e:
+        st.error(f"Error generating PDF: {str(e)}")
+        return None
+
 # ==================== MAIN APP ====================
 
 def main():
@@ -1063,7 +1490,8 @@ def main():
                 }
                 
                 # Tabs
-                tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+                tab_ai, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+                    "🤖 AI Summary",
                     "📈 Overview", 
                     "🛤️ User Journey", 
                     "⚡ Features", 
@@ -1073,6 +1501,168 @@ def main():
                     "🧠 Advanced Analytics",
                     "📥 Export & Data"
                 ])
+                
+                # TAB AI: AI SUMMARY
+                with tab_ai:
+                    st.header("🤖 AI-Powered Analytics Summary")
+                    st.markdown("Get intelligent insights and recommendations powered by DeepSeek AI")
+                    
+                    # Create data summary for AI analysis
+                    data_summary = create_data_summary(df)
+                    
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        st.subheader("📊 Data Overview")
+                        
+                        if isinstance(data_summary, dict) and 'error' not in data_summary:
+                            # Display key metrics
+                            metric_col1, metric_col2, metric_col3 = st.columns(3)
+                            
+                            with metric_col1:
+                                st.metric("Total Users", f"{data_summary.get('total_users', 0):,}")
+                                st.metric("Total Events", f"{data_summary.get('total_events', 0):,}")
+                            
+                            with metric_col2:
+                                st.metric("Total Revenue", f"${data_summary.get('revenue_total', 0):,.2f}")
+                                st.metric("Avg Session Duration", f"{data_summary.get('avg_session_duration', 0):.1f} min")
+                            
+                            with metric_col3:
+                                if 'user_segments' in data_summary:
+                                    segments = data_summary['user_segments']
+                                    st.metric("High Activity Users", segments.get('high_activity', 0))
+                                    st.metric("Medium Activity Users", segments.get('medium_activity', 0))
+                            
+                            # Top Events Chart
+                            if data_summary.get('top_events'):
+                                st.subheader("🔥 Top Events")
+                                events_df = pd.DataFrame(list(data_summary['top_events'].items()), 
+                                                       columns=['Event', 'Count'])
+                                fig_events = px.bar(events_df, x='Event', y='Count', 
+                                                  title="Most Frequent Events")
+                                fig_events.update_layout(height=400)
+                               
+                        else:
+                            st.error("Error creating data summary for AI analysis")
+                    
+                    with col2:
+                        st.subheader("🚀 Generate AI Insights")
+                        
+                        if st.button("🧠 Generate AI Summary", type="primary", use_container_width=True):
+                            # Create a progress container
+                            progress_container = st.container()
+                            
+                            with progress_container:
+                                # Progress bar
+                                progress_bar = st.progress(0)
+                                status_text = st.empty()
+                                
+                                # Step 1: Preparing data
+                                status_text.text("🔄 Preparing analytics data...")
+                                progress_bar.progress(20)
+                                time.sleep(0.5)
+                                
+                                # Step 2: Connecting to AI
+                                status_text.text("🤖 Connecting to DeepSeek AI (Think Model)...")
+                                progress_bar.progress(40)
+                                time.sleep(0.5)
+                                
+                                # Step 3: AI Processing
+                                status_text.text("🧠 AI is analyzing your data (this may take 30-60 seconds)...")
+                                progress_bar.progress(60)
+                                
+                                # Generate AI summary
+                                ai_summary = generate_ai_summary(data_summary)
+                                
+                                # Step 4: Processing results
+                                status_text.text("📊 Processing AI insights...")
+                                progress_bar.progress(90)
+                                time.sleep(0.3)
+                                
+                                if ai_summary and not ai_summary.startswith("Error"):
+                                    # Step 5: Complete
+                                    status_text.text("✅ Analysis completed successfully!")
+                                    progress_bar.progress(100)
+                                    time.sleep(0.5)
+                                    
+                                    st.session_state['ai_summary'] = ai_summary
+                                    st.session_state['data_summary'] = data_summary
+                                    
+                                    # Clear progress indicators
+                                    progress_container.empty()
+                                    st.success("🎉 AI analysis completed! Scroll down to view insights.")
+                                    st.rerun()  # Refresh to show the new insights
+                                else:
+                                    # Error handling
+                                    status_text.text("❌ Analysis failed")
+                                    progress_bar.progress(100)
+                                    time.sleep(0.5)
+                                    progress_container.empty()
+                                    st.error(f"❌ {ai_summary}")
+                                    # Clear any previous successful summary
+                                    if 'ai_summary' in st.session_state:
+                                        del st.session_state['ai_summary']
+                        
+                        # Show current status
+                        if 'ai_summary' in st.session_state:
+                            st.success("✅ AI insights available below")
+                        else:
+                            st.info("💡 Click to generate AI-powered insights")
+                        
+                        if st.button("📄 Download PDF Report", use_container_width=True):
+                            if 'ai_summary' in st.session_state:
+                                with st.spinner("Generating PDF report..."):
+                                    pdf_buffer = generate_pdf_report(
+                                        st.session_state['ai_summary'], 
+                                        st.session_state['data_summary']
+                                    )
+                                    if pdf_buffer:
+                                        st.download_button(
+                                            label="📥 Download AI Analytics Report",
+                                            data=pdf_buffer.getvalue(),
+                                            file_name=f"ai_analytics_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                                            mime="application/pdf",
+                                            use_container_width=True
+                                        )
+                            else:
+                                st.warning("Please generate AI summary first")
+                    
+                    # Display AI Summary
+                    if 'ai_summary' in st.session_state:
+                        st.divider()
+                        st.subheader("🎯 AI-Generated Insights")
+                        
+                        # Create expandable sections for better organization
+                        with st.expander("📈 Key Performance Insights", expanded=True):
+                            ai_content = st.session_state['ai_summary']
+                            if "Key Performance Insights" in ai_content:
+                                insights_section = ai_content.split("Key Performance Insights")[1].split("User Behavior Patterns")[0] if "User Behavior Patterns" in ai_content else ai_content.split("Key Performance Insights")[1]
+                                st.markdown(insights_section.strip())
+                            else:
+                                st.markdown(ai_content[:500] + "..." if len(ai_content) > 500 else ai_content)
+                        
+                        with st.expander("👥 User Behavior Analysis"):
+                            if "User Behavior Patterns" in ai_content:
+                                behavior_section = ai_content.split("User Behavior Patterns")[1].split("Revenue Analysis")[0] if "Revenue Analysis" in ai_content else ai_content.split("User Behavior Patterns")[1]
+                                st.markdown(behavior_section.strip())
+                        
+                        with st.expander("💰 Revenue Analysis"):
+                            if "Revenue Analysis" in ai_content:
+                                revenue_section = ai_content.split("Revenue Analysis")[1].split("Recommendations for Growth")[0] if "Recommendations for Growth" in ai_content else ai_content.split("Revenue Analysis")[1]
+                                st.markdown(revenue_section.strip())
+                        
+                        with st.expander("🚀 Growth Recommendations"):
+                            if "Recommendations for Growth" in ai_content:
+                                recommendations_section = ai_content.split("Recommendations for Growth")[1].split("Risk Areas to Monitor")[0] if "Risk Areas to Monitor" in ai_content else ai_content.split("Recommendations for Growth")[1]
+                                st.markdown(recommendations_section.strip())
+                        
+                        with st.expander("⚠️ Risk Areas"):
+                            if "Risk Areas to Monitor" in ai_content:
+                                risk_section = ai_content.split("Risk Areas to Monitor")[1]
+                                st.markdown(risk_section.strip())
+                    
+                    else:
+                        st.info("👆 Click 'Generate AI Summary' to get intelligent insights about your data")
                 
                 # TAB 1: OVERVIEW
                 with tab1:
