@@ -278,6 +278,104 @@ def load_and_process_csv(_uploaded_file):
         return None
 
 @st.cache_data
+def load_csv_data(file_path):
+    """Load and process CSV file from file path"""
+    try:
+        # Check if file exists
+        if not os.path.exists(file_path):
+            st.error(f"CSV file not found: {file_path}")
+            return None
+        
+        # Get file info
+        file_size = os.path.getsize(file_path)
+        st.info(f"📁 Loading file: {file_path} ({file_size:,} bytes)")
+        
+        # Load CSV file
+        try:
+            df = pd.read_csv(file_path)
+        except pd.errors.EmptyDataError:
+            st.error("The CSV file is empty or contains no data.")
+            return None
+        except pd.errors.ParserError as e:
+            st.warning(f"Parser error with default settings: {str(e)}")
+            # Try with different delimiter
+            try:
+                df = pd.read_csv(file_path, delimiter=';')
+                st.success("✅ Successfully parsed with semicolon delimiter")
+            except Exception as e2:
+                st.error(f"Error parsing CSV file with alternative delimiter: {str(e2)}")
+                return None
+        except UnicodeDecodeError:
+            # Try different encoding
+            try:
+                df = pd.read_csv(file_path, encoding='latin-1')
+                st.success("✅ Successfully parsed with latin-1 encoding")
+            except Exception as e:
+                st.error(f"Error with encoding: {str(e)}")
+                return None
+        except Exception as e:
+            st.error(f"Error reading CSV file: {str(e)}")
+            return None
+        
+        # Check if DataFrame is empty or has no columns
+        if df.empty:
+            st.error("The CSV file is empty. Please check the file.")
+            return None
+            
+        if len(df.columns) == 0:
+            st.error("The CSV file has no columns. Please check the file format.")
+            return None
+        
+        # Store original datetime values before processing
+        original_datetime_values = None
+        if 'datetimeutc' in df.columns:
+            original_datetime_values = df['datetimeutc'].copy()
+        
+        # Parse datetime - Handle multiple formats
+        if 'datetimeutc' in df.columns:
+            # First try parsing with UTC (for ISO format with timezone)
+            df['datetimeutc'] = pd.to_datetime(df['datetimeutc'], errors='coerce', utc=True)
+            
+            # For timezone-aware values, convert to timezone-naive
+            if df['datetimeutc'].dt.tz is not None:
+                df['datetimeutc'] = df['datetimeutc'].dt.tz_localize(None)
+            
+            # For values that failed UTC parsing, try without timezone assumption
+            failed_mask = df['datetimeutc'].isnull()
+            if failed_mask.any():
+                # Use the stored original values for failed entries
+                failed_values = original_datetime_values[failed_mask]
+                
+                # Parse without timezone assumption
+                parsed_without_tz = pd.to_datetime(failed_values, errors='coerce')
+                
+                # Update the failed entries
+                df.loc[failed_mask, 'datetimeutc'] = parsed_without_tz
+                
+        elif 'created_at' in df.columns:
+            df['created_at'] = pd.to_datetime(df['created_at'], errors='coerce')
+            df['datetimeutc'] = df['created_at']
+        
+        # Extract date components - Handle NaN values properly
+        if 'datetimeutc' in df.columns:
+            # Remove rows with invalid datetime values to prevent mixed types
+            df = df.dropna(subset=['datetimeutc'])
+            
+            # Extract date components only from valid datetime values
+            df['date'] = df['datetimeutc'].dt.date
+            df['hour'] = df['datetimeutc'].dt.hour
+            df['day_of_week'] = df['datetimeutc'].dt.day_name()
+            df['month'] = df['datetimeutc'].dt.month
+        
+        # Success message
+        st.success(f"✅ Successfully loaded {len(df):,} rows with {len(df.columns)} columns")
+        
+        return df
+    except Exception as e:
+        st.error(f"Error loading CSV: {str(e)}")
+        return None
+
+@st.cache_data
 def reconstruct_sessions(df, timeout_minutes=30):
     """Reconstruct user sessions based on time gaps"""
     if 'userid' not in df.columns or 'datetimeutc' not in df.columns:
@@ -1411,20 +1509,28 @@ def main():
     st.title("📊 Astrocoach User Analytics Dashboard")
     st.markdown("### Comprehensive User Behavior & Revenue Analytics")
     
+    # CSV file path
+    CSV_FILE_PATH = "analytics.csv"
+    
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # File Upload
-        st.subheader("📁 Data Upload")
-        app_events_file = st.file_uploader("Upload App Events CSV", type=['csv'], key='app_events')
-        payment_events_file = st.file_uploader("Upload Payment Events CSV (Optional)", type=['csv'], key='payments')
+        # Data Source Info
+        st.subheader("📁 Data Source")
+        st.info(f"📊 Using CSV file: {CSV_FILE_PATH}")
+        st.caption("💡 To update data, modify the CSV file directly on the server")
+        
+        # Refresh Data Button
+        if st.button("🔄 Refresh Data", help="Reload data from CSV file"):
+            st.cache_data.clear()
+            st.rerun()
         
         st.divider()
         
         # Filters
         st.subheader("🔍 Filters")
-        date_range = st.selectbox("Date Range", ["Last 7 Days", "Last 30 Days", "Last 90 Days", "All Time"])
+        date_range = st.selectbox("Date Range", ["Last 7 Days", "Last 30 Days", "All Time"])
         
         # User Search
         st.subheader("👤 User Search")
@@ -1447,27 +1553,30 @@ def main():
         annotation_mode = st.selectbox("Funnel Annotation Level", ["Minimal", "Standard", "Detailed"], index=1)
         
         st.divider()
-        st.info("💡 Upload your CSV files to begin analysis")
+        st.success("✅ CSV data source configured")
     
     # Main Content
-    if app_events_file is not None:
-        # Load data
+    # Load CSV data directly
+    try:
         with st.spinner("Loading and processing data..."):
-            df = load_and_process_csv(app_events_file)
+            # Check if CSV file exists
+            if not os.path.exists(CSV_FILE_PATH):
+                st.error(f"❌ CSV file not found: {CSV_FILE_PATH}")
+                st.info("Please ensure the CSV file exists in the application directory.")
+                return
             
-            if df is not None:
+            # Load data from CSV
+            df = load_csv_data(CSV_FILE_PATH)
+            
+            if df is not None and not df.empty:
                 # Reconstruct sessions
                 df = reconstruct_sessions(df, session_timeout)
                 
                 # Calculate metrics
                 session_metrics = calculate_session_metrics(df)
                 
-                # Load payment data if available
-                payment_df = pd.DataFrame()
-                if payment_events_file is not None:
-                    payment_raw = load_and_process_csv(payment_events_file)
-                    if payment_raw is not None:
-                        payment_df = parse_payment_data(payment_raw)
+                # Parse payment data from the same CSV (adapty_event category)
+                payment_df = parse_payment_data(df)
                 
                 st.success(f"✅ Loaded {len(df):,} events from {df['userid'].nunique():,} users")
                 
@@ -1641,29 +1750,8 @@ def main():
                             else:
                                 st.markdown(ai_content[:500] + "..." if len(ai_content) > 500 else ai_content)
                         
-                        with st.expander("👥 User Behavior Analysis"):
-                            if "User Behavior Patterns" in ai_content:
-                                behavior_section = ai_content.split("User Behavior Patterns")[1].split("Revenue Analysis")[0] if "Revenue Analysis" in ai_content else ai_content.split("User Behavior Patterns")[1]
-                                st.markdown(behavior_section.strip())
-                        
-                        with st.expander("💰 Revenue Analysis"):
-                            if "Revenue Analysis" in ai_content:
-                                revenue_section = ai_content.split("Revenue Analysis")[1].split("Recommendations for Growth")[0] if "Recommendations for Growth" in ai_content else ai_content.split("Revenue Analysis")[1]
-                                st.markdown(revenue_section.strip())
-                        
-                        with st.expander("🚀 Growth Recommendations"):
-                            if "Recommendations for Growth" in ai_content:
-                                recommendations_section = ai_content.split("Recommendations for Growth")[1].split("Risk Areas to Monitor")[0] if "Risk Areas to Monitor" in ai_content else ai_content.split("Recommendations for Growth")[1]
-                                st.markdown(recommendations_section.strip())
-                        
-                        with st.expander("⚠️ Risk Areas"):
-                            if "Risk Areas to Monitor" in ai_content:
-                                risk_section = ai_content.split("Risk Areas to Monitor")[1]
-                                st.markdown(risk_section.strip())
-                    
-                    else:
-                        st.info("👆 Click 'Generate AI Summary' to get intelligent insights about your data")
-                
+                 
+         
                 # TAB 1: OVERVIEW
                 with tab1:
                     st.header("Executive Dashboard")
@@ -2321,12 +2409,36 @@ def main():
                     top_events = df.groupby(['category', 'name']).size().reset_index(name='count')
                     top_events = top_events.sort_values('count', ascending=False).head(20)
                     st.dataframe(top_events, use_container_width=True)
-    
-    else:
-        # Welcome screen
-        st.info("Welcome to the Analytics Dashboard! Upload your CSV files to begin analysis.")
+            else:
+                st.error("❌ Failed to load data from CSV file. Please check the file format and try again.")
+                
+    except Exception as e:
+        st.error(f"❌ Error processing data: {str(e)}")
+        st.info("Please check the CSV file format and ensure it contains the required columns.")
         
+        # Show expected format
+        st.subheader("Expected CSV Format")
+        expected_columns = ['analyticsid', 'userid', 'deviceid', 'appversion', 'category', 'name', 'datetimeutc', 'appname', 'analyticsdata', 'membershipid', 'created_at', 'updated_at']
+        st.write("Required columns:", ", ".join(expected_columns))
+    
+    # Welcome/Info section (always shown)
+    st.divider()
+    st.subheader("📋 Dashboard Information")
+    
+    with st.expander("ℹ️ About This Dashboard", expanded=False):
         st.markdown("""
+        ### Analytics Dashboard v1.5.5
+        
+        This dashboard provides comprehensive analytics for user behavior and revenue data.
+        
+        ### Data Source
+        - **File**: `example_analytics.csv`
+        - **Location**: Application directory
+        - **Update Method**: Modify CSV file directly on server
+        
+        ### Features
+        
+        st.markdown(""
         ### Getting Started
         
         1. **Upload Data**: Use the sidebar to upload your app events CSV file
