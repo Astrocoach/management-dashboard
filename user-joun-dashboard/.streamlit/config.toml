@@ -1,0 +1,13 @@
+[server]
+# Allow unsafe-eval to fix Content Security Policy issues
+enableCORS = false
+enableXsrfProtection = false
+port = 8502
+
+[browser]
+# Disable CSP restrictions for development
+gatherUsageStats = false
+
+[global]
+# Development mode settings - removed to avoid port conflict
+# developmentMode = true

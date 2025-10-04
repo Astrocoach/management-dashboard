@@ -429,6 +429,381 @@ def detect_anomalies(df):
     
     return user_behavior
 
+# ==================== JSON DATA PROCESSING FUNCTIONS ====================
+
+@st.cache_data
+def process_app_events_data(df):
+    """Process app events data from JSON - similar to CSV processing"""
+    try:
+        if df.empty:
+            return df
+        
+        # Parse datetime - Handle multiple formats
+        if 'datetimeutc' in df.columns:
+            # First try parsing with UTC (for ISO format with timezone)
+            df['datetimeutc'] = pd.to_datetime(df['datetimeutc'], errors='coerce', utc=True)
+            
+            # For timezone-aware values, convert to timezone-naive
+            if df['datetimeutc'].dt.tz is not None:
+                df['datetimeutc'] = df['datetimeutc'].dt.tz_localize(None)
+            
+        elif 'created_at' in df.columns:
+            df['created_at'] = pd.to_datetime(df['created_at'], errors='coerce')
+            df['datetimeutc'] = df['created_at']
+        
+        # Extract date components - Handle NaN values properly
+        if 'datetimeutc' in df.columns:
+            # Remove rows with invalid datetime values to prevent mixed types
+            df = df.dropna(subset=['datetimeutc'])
+            
+            # Extract date components only from valid datetime values
+            df['date'] = df['datetimeutc'].dt.date
+            df['hour'] = df['datetimeutc'].dt.hour
+            df['day_of_week'] = df['datetimeutc'].dt.day_name()
+            df['month'] = df['datetimeutc'].dt.month
+        
+        # Ensure userid is string for consistent correlation
+        if 'userid' in df.columns:
+            df['userid'] = df['userid'].astype(str)
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Error processing app events data: {str(e)}")
+        return df
+
+# ==================== JSON DATA LOADING FUNCTIONS ====================
+
+@st.cache_data
+def load_app_events_json():
+    """Load app events from JSON file"""
+    try:
+        file_path = "offline_data/app_event.json"
+        if not os.path.exists(file_path):
+            st.error(f"App events file not found: {file_path}")
+            return pd.DataFrame()
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Handle nested JSON structure - extract data array
+        if isinstance(data, dict) and 'data' in data:
+            df = pd.DataFrame(data['data'])
+        elif isinstance(data, list):
+            df = pd.DataFrame(data)
+        else:
+            df = pd.DataFrame(data)
+        
+        if df.empty:
+            st.warning("App events file is empty")
+            return df
+        
+        # Process the data similar to CSV processing
+        df = process_app_events_data(df)
+        
+        st.success(f"✅ Successfully loaded {len(df)} app events from JSON")
+        return df
+        
+    except Exception as e:
+        st.error(f"Error loading app events JSON: {str(e)}")
+        return pd.DataFrame()
+
+@st.cache_data
+def load_adapty_events_json():
+    """Load Adapty events from JSON file"""
+    try:
+        file_path = "offline_data/adapty_event.json"
+        if not os.path.exists(file_path):
+            st.error(f"Adapty events file not found: {file_path}")
+            return pd.DataFrame()
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Handle nested JSON structure - extract data array
+        if isinstance(data, dict) and 'data' in data:
+            df = pd.DataFrame(data['data'])
+        elif isinstance(data, list):
+            df = pd.DataFrame(data)
+        else:
+            df = pd.DataFrame(data)
+        
+        if df.empty:
+            st.warning("Adapty events file is empty")
+            return df
+        
+        # Extract amount from analytic_attr_data before converting to JSON strings
+        if 'analytic_attr_data' in df.columns:
+            def extract_amount(attr_data):
+                try:
+                    if isinstance(attr_data, list):
+                        for item in attr_data:
+                            if isinstance(item, dict) and item.get('analytic_name') == 'amount':
+                                return float(item.get('analytic_value', 0))
+                    return 0.0
+                except (ValueError, TypeError):
+                    return 0.0
+            
+            df['amount'] = df['analytic_attr_data'].apply(extract_amount)
+        
+        # Extract currency from analyticsdata if available
+        if 'analyticsdata' in df.columns:
+            def extract_currency(analytics_data):
+                try:
+                    if isinstance(analytics_data, str):
+                        data = json.loads(analytics_data)
+                        if isinstance(data, dict) and 'adaptyObject' in data:
+                            price = data['adaptyObject'].get('price', {})
+                            return price.get('currencyCode', 'USD')
+                    return 'USD'
+                except (json.JSONDecodeError, TypeError):
+                    return 'USD'
+            
+            df['currency'] = df['analyticsdata'].apply(extract_currency)
+            
+            # Extract additional product information
+            def extract_product_info(analytics_data):
+                try:
+                    if isinstance(analytics_data, str):
+                        data = json.loads(analytics_data)
+                        if isinstance(data, dict) and 'adaptyObject' in data:
+                            adapty_obj = data['adaptyObject']
+                            return {
+                                'product_id': adapty_obj.get('vendorProductId', ''),
+                                'product_title': adapty_obj.get('localizedTitle', ''),
+                                'region': adapty_obj.get('regionCode', 'Unknown')
+                            }
+                    return {'product_id': '', 'product_title': '', 'region': 'Unknown'}
+                except (json.JSONDecodeError, TypeError):
+                    return {'product_id': '', 'product_title': '', 'region': 'Unknown'}
+            
+            product_info = df['analyticsdata'].apply(extract_product_info)
+            df['product_id'] = [info['product_id'] for info in product_info]
+            df['product_title'] = [info['product_title'] for info in product_info]
+            df['region'] = [info['region'] for info in product_info]
+        
+        # Handle complex data types (lists/dicts) by converting to JSON strings
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                # Check if column contains lists or dicts
+                sample_values = df[col].dropna().head(5)
+                if len(sample_values) > 0:
+                    first_val = sample_values.iloc[0]
+                    if isinstance(first_val, (list, dict)):
+                        df[col] = df[col].apply(lambda x: json.dumps(x) if isinstance(x, (list, dict)) else str(x))
+        
+        # Process datetime
+        if 'datetimeutc' in df.columns:
+            df['datetimeutc'] = pd.to_datetime(df['datetimeutc'], errors='coerce')
+            df = df.dropna(subset=['datetimeutc'])
+            
+            # Extract date components
+            df['date'] = df['datetimeutc'].dt.date
+            df['hour'] = df['datetimeutc'].dt.hour
+            df['day_of_week'] = df['datetimeutc'].dt.day_name()
+            df['month'] = df['datetimeutc'].dt.month
+        
+        # Ensure string columns are properly typed
+        string_columns = ['category', 'name', 'appname']
+        for col in string_columns:
+            if col in df.columns:
+                df[col] = df[col].astype(str)
+        
+        # Ensure userid is string for consistency
+        if 'userid' in df.columns:
+            df['userid'] = df['userid'].astype(str)
+        
+        st.success(f"✅ Successfully loaded {len(df)} Adapty events from JSON")
+        return df
+        
+    except Exception as e:
+        st.error(f"Error loading Adapty events JSON: {str(e)}")
+        return pd.DataFrame()
+
+@st.cache_data
+def load_revenue_json():
+    """Load revenue data from JSON file"""
+    try:
+        file_path = "offline_data/revenue.json"
+        if not os.path.exists(file_path):
+            st.error(f"Revenue file not found: {file_path}")
+            return pd.DataFrame()
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Handle the nested date-based structure
+        records = []
+        if isinstance(data, dict) and 'data' in data:
+            # Extract entries from each date
+            for date_key, date_data in data['data'].items():
+                if isinstance(date_data, dict) and 'entries' in date_data:
+                    for entry in date_data['entries']:
+                        # Add the date to each entry
+                        entry_with_date = entry.copy()
+                        entry_with_date['date'] = date_key
+                        records.append(entry_with_date)
+        
+        if not records:
+            st.warning("No revenue entries found in JSON file")
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(records)
+        
+        # Convert customer_user_id to string for correlation
+        if 'customer_user_id' in df.columns:
+            df['customer_user_id'] = df['customer_user_id'].astype(str)
+        
+        # Process datetime columns
+        datetime_columns = ['purchase_date', 'last_updated_at']
+        for col in datetime_columns:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+        
+        # Ensure price_usd is numeric
+        if 'price_usd' in df.columns:
+            df['price_usd'] = pd.to_numeric(df['price_usd'], errors='coerce')
+            # Create revenue_usd column for compatibility
+            df['revenue_usd'] = df['price_usd']
+        
+        # Create created_at column from purchase_date for compatibility
+        if 'purchase_date' in df.columns:
+            df['created_at'] = df['purchase_date']
+        
+        st.success(f"✅ Successfully loaded {len(df)} revenue records from JSON")
+        return df
+        
+    except Exception as e:
+        st.error(f"Error loading revenue JSON: {str(e)}")
+        return pd.DataFrame()
+
+@st.cache_data
+def correlate_user_revenue_data(app_events_df, adapty_events_df, revenue_df):
+    """Correlate revenue events with user data using revenue.json as bridge"""
+    try:
+        if app_events_df.empty or revenue_df.empty:
+            st.warning("Cannot correlate data: missing app events or revenue data")
+            return pd.DataFrame(), pd.DataFrame()
+        
+        # Create user mapping from revenue data
+        # revenue.json contains customer_user_id and profile_id
+        available_columns = revenue_df.columns.tolist()
+        profile_col = 'profile_id' if 'profile_id' in available_columns else 'adapty_profile_id'
+        customer_col = 'customer_user_id'
+        
+        if profile_col not in available_columns or customer_col not in available_columns:
+            st.warning(f"Missing required columns in revenue data. Available: {available_columns}")
+            return pd.DataFrame(), pd.DataFrame()
+        
+        user_mapping = revenue_df[[customer_col, profile_col]].drop_duplicates()
+        
+        # Correlate app events with revenue data using customer_user_id
+        # Convert userid in app_events to string for matching
+        app_events_df['userid_str'] = app_events_df['userid'].astype(str)
+        
+        # Convert customer_user_id to string for consistent matching
+        user_mapping[customer_col + '_str'] = user_mapping[customer_col].astype(str)
+        
+        # Merge app events with user mapping
+        app_events_with_revenue = app_events_df.merge(
+            user_mapping, 
+            left_on='userid_str', 
+            right_on=customer_col + '_str', 
+            how='left'
+        )
+        
+        # If we have adapty events, correlate them too
+        correlated_adapty_df = pd.DataFrame()
+        if not adapty_events_df.empty:
+            # Adapty events should have userid that matches profile_id
+            adapty_events_df['userid_str'] = adapty_events_df['userid'].astype(str)
+            
+            # Convert profile_id to string for consistent matching
+            user_mapping[profile_col + '_str'] = user_mapping[profile_col].astype(str)
+            
+            correlated_adapty_df = adapty_events_df.merge(
+                user_mapping,
+                left_on='userid_str',
+                right_on=profile_col + '_str',
+                how='left'
+            )
+        
+        # Create comprehensive user revenue summary
+        user_revenue_summary = revenue_df.groupby('customer_user_id').agg({
+            'revenue_usd': 'sum',
+            'created_at': ['min', 'max', 'count']
+        }).reset_index()
+        
+        user_revenue_summary.columns = [
+            'customer_user_id', 'total_revenue_usd', 
+            'first_purchase', 'last_purchase', 'purchase_count'
+        ]
+        
+        # Add revenue summary to app events
+        app_events_enriched = app_events_with_revenue.merge(
+            user_revenue_summary,
+            on='customer_user_id',
+            how='left'
+        )
+        
+        # Fill NaN revenue values with 0
+        revenue_columns = ['total_revenue_usd', 'purchase_count']
+        for col in revenue_columns:
+            if col in app_events_enriched.columns:
+                app_events_enriched[col] = app_events_enriched[col].fillna(0)
+        
+        st.success(f"✅ Successfully correlated {len(app_events_enriched)} app events with revenue data")
+        
+        return app_events_enriched, correlated_adapty_df
+        
+    except Exception as e:
+        st.error(f"Error correlating user revenue data: {str(e)}")
+        return pd.DataFrame(), pd.DataFrame()
+
+@st.cache_data
+def load_all_json_data():
+    """Load and correlate all JSON data sources"""
+    try:
+        st.info("🔄 Loading JSON data sources...")
+        
+        # Load individual data sources
+        app_events_df = load_app_events_json()
+        adapty_events_df = load_adapty_events_json()
+        revenue_df = load_revenue_json()
+        
+        # Correlate the data
+        if not app_events_df.empty and not revenue_df.empty:
+            app_events_enriched, adapty_events_correlated = correlate_user_revenue_data(
+                app_events_df, adapty_events_df, revenue_df
+            )
+            
+            return {
+                'app_events': app_events_enriched,
+                'adapty_events': adapty_events_correlated,
+                'revenue': revenue_df,
+                'app_events_raw': app_events_df,
+                'adapty_events_raw': adapty_events_df
+            }
+        else:
+            st.warning("Using raw data without correlation due to missing data")
+            return {
+                'app_events': app_events_df,
+                'adapty_events': adapty_events_df,
+                'revenue': revenue_df,
+                'app_events_raw': app_events_df,
+                'adapty_events_raw': adapty_events_df
+            }
+            
+    except Exception as e:
+        st.error(f"Error loading JSON data: {str(e)}")
+        return {
+            'app_events': pd.DataFrame(),
+            'adapty_events': pd.DataFrame(),
+            'revenue': pd.DataFrame(),
+            'app_events_raw': pd.DataFrame(),
+            'adapty_events_raw': pd.DataFrame()
+        }
+
 # ==================== VISUALIZATION FUNCTIONS ====================
 
 def create_kpi_cards(metrics):
@@ -577,12 +952,13 @@ def filter_df_by_user_segment(df, user_segment, segment_type='new'):
     else:  # 'all'
         return df
 
-def create_funnel_chart(df, segment_type='all'):
+def create_funnel_chart(df, segment_type='all', adapty_df=None):
     """Create conversion funnel visualization with user segmentation
     
     Args:
         df: Analytics dataframe
         segment_type: 'new', 'existing', or 'all'
+        adapty_df: Adapty events dataframe for payment events
     """
     # Classify users
     user_segments = classify_user_segments(df)
@@ -624,7 +1000,12 @@ def create_funnel_chart(df, segment_type='all'):
     
     funnel_data = []
     for stage_name, events in funnel_stages:
-        count = filtered_df[filtered_df['name'].isin(events)]['userid'].nunique()
+        if 'payment_success' in events and adapty_df is not None and not adapty_df.empty:
+            # Use Adapty events for payment_success
+            count = adapty_df[adapty_df['name'].isin(events)]['userid'].nunique()
+        else:
+            # Use app events for other stages
+            count = filtered_df[filtered_df['name'].isin(events)]['userid'].nunique()
         funnel_data.append({'Stage': stage_name, 'Users': count})
     
     funnel_df = pd.DataFrame(funnel_data)
@@ -639,7 +1020,7 @@ def create_funnel_chart(df, segment_type='all'):
     fig.update_layout(title_text=f"Conversion Funnel{title_suffix}", height=500)
     return fig
 
-def create_goal_funnel_visualization(df, session_timeout_minutes=30, top_n_dropoffs=5, segment_type='all'):
+def create_goal_funnel_visualization(df, session_timeout_minutes=30, top_n_dropoffs=5, segment_type='all', adapty_df=None):
     """Create Goal Funnel Visualization with drop-off paths (no cart stages)
     - Dynamically builds stages based on available events
     - Uses sessions to compute progression and drop-offs
@@ -1415,10 +1796,14 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # File Upload
-        st.subheader("📁 Data Upload")
-        app_events_file = st.file_uploader("Upload App Events CSV", type=['csv'], key='app_events')
-        payment_events_file = st.file_uploader("Upload Payment Events CSV (Optional)", type=['csv'], key='payments')
+        # JSON Data Status
+        st.subheader("📊 JSON Data Sources")
+        st.info("🔄 Using integrated JSON data sources")
+        
+        # Data refresh button
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
         
         st.divider()
         
@@ -1447,103 +1832,107 @@ def main():
         annotation_mode = st.selectbox("Funnel Annotation Level", ["Minimal", "Standard", "Detailed"], index=1)
         
         st.divider()
-        st.info("💡 Upload your CSV files to begin analysis")
+        st.info("💡 JSON data sources are automatically loaded")
     
-    # Main Content
-    if app_events_file is not None:
-        # Load data
-        with st.spinner("Loading and processing data..."):
-            df = load_and_process_csv(app_events_file)
+    # Main Content - Load JSON data
+    with st.spinner("Loading and processing JSON data..."):
+        json_data = load_all_json_data()
+        
+        # Extract data from the loaded JSON
+        df = json_data['app_events']
+        adapty_df = json_data['adapty_events'] 
+        revenue_df = json_data['revenue']
+        
+        if not df.empty:
+            # Reconstruct sessions
+            df = reconstruct_sessions(df, session_timeout)
             
-            if df is not None:
-                # Reconstruct sessions
-                df = reconstruct_sessions(df, session_timeout)
-                
-                # Calculate metrics
-                session_metrics = calculate_session_metrics(df)
-                
-                # Load payment data if available
+            # Calculate metrics
+            session_metrics = calculate_session_metrics(df)
+            
+            # Use Adapty events for payment analysis (filter for payment_success events)
+            if not adapty_df.empty:
+                payment_df = adapty_df[adapty_df['name'] == 'payment_success'].copy()
+                # If no payment_success events, try to use all adapty events with amount > 0
+                if payment_df.empty and 'amount' in adapty_df.columns:
+                    payment_df = adapty_df[adapty_df['amount'] > 0].copy()
+            else:
                 payment_df = pd.DataFrame()
-                if payment_events_file is not None:
-                    payment_raw = load_and_process_csv(payment_events_file)
-                    if payment_raw is not None:
-                        payment_df = parse_payment_data(payment_raw)
+            
+            st.success(f"✅ Loaded {len(df):,} events from {df['userid'].nunique():,} users")
+            
+            # Calculate KPIs
+            total_users = df['userid'].nunique()
+            total_sessions = df['session_id'].nunique() if 'session_id' in df.columns else 0
+            avg_session_duration = session_metrics['session_duration'].mean() if not session_metrics.empty else 0
+            total_revenue = payment_df['amount'].sum() if not payment_df.empty and 'amount' in payment_df.columns else 0
+            conversion_rate = (payment_df['userid'].nunique() / total_users * 100) if not payment_df.empty and 'userid' in payment_df.columns else 0
+            
+            kpi_metrics = {
+                'dau': total_users,
+                'dau_change': 12.5,
+                'revenue': total_revenue,
+                'revenue_change': 23.1,
+                'conversion_rate': conversion_rate,
+                'conv_change': 2.3,
+                'avg_session': avg_session_duration,
+                'session_change': -5.2
+            }
+            
+            # Tabs
+            tab_ai, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+                "🤖 AI Summary",
+                "📈 Overview", 
+                "🛤️ User Journey", 
+                "⚡ Features", 
+                "💰 Monetization", 
+                "👥 Segmentation",
+                "🔍 User Explorer",
+                "🧠 Advanced Analytics",
+                "📥 Export & Data"
+            ])
+            
+            # TAB AI: AI SUMMARY
+            with tab_ai:
+                st.header("🤖 AI-Powered Analytics Summary")
+                st.markdown("Get intelligent insights and recommendations powered by DeepSeek AI")
                 
-                st.success(f"✅ Loaded {len(df):,} events from {df['userid'].nunique():,} users")
+                # Create data summary for AI analysis
+                data_summary = create_data_summary(df)
                 
-                # Calculate KPIs
-                total_users = df['userid'].nunique()
-                total_sessions = df['session_id'].nunique() if 'session_id' in df.columns else 0
-                avg_session_duration = session_metrics['session_duration'].mean() if not session_metrics.empty else 0
-                total_revenue = payment_df['amount'].sum() if not payment_df.empty else 0
-                conversion_rate = (payment_df['userid'].nunique() / total_users * 100) if not payment_df.empty else 0
+                col1, col2 = st.columns([2, 1])
                 
-                kpi_metrics = {
-                    'dau': total_users,
-                    'dau_change': 12.5,
-                    'revenue': total_revenue,
-                    'revenue_change': 23.1,
-                    'conversion_rate': conversion_rate,
-                    'conv_change': 2.3,
-                    'avg_session': avg_session_duration,
-                    'session_change': -5.2
-                }
-                
-                # Tabs
-                tab_ai, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-                    "🤖 AI Summary",
-                    "📈 Overview", 
-                    "🛤️ User Journey", 
-                    "⚡ Features", 
-                    "💰 Monetization", 
-                    "👥 Segmentation",
-                    "🔍 User Explorer",
-                    "🧠 Advanced Analytics",
-                    "📥 Export & Data"
-                ])
-                
-                # TAB AI: AI SUMMARY
-                with tab_ai:
-                    st.header("🤖 AI-Powered Analytics Summary")
-                    st.markdown("Get intelligent insights and recommendations powered by DeepSeek AI")
+                with col1:
+                    st.subheader("📊 Data Overview")
                     
-                    # Create data summary for AI analysis
-                    data_summary = create_data_summary(df)
-                    
-                    col1, col2 = st.columns([2, 1])
-                    
-                    with col1:
-                        st.subheader("📊 Data Overview")
+                    if isinstance(data_summary, dict) and 'error' not in data_summary:
+                        # Display key metrics
+                        metric_col1, metric_col2, metric_col3 = st.columns(3)
                         
-                        if isinstance(data_summary, dict) and 'error' not in data_summary:
-                            # Display key metrics
-                            metric_col1, metric_col2, metric_col3 = st.columns(3)
+                        with metric_col1:
+                            st.metric("Total Users", f"{data_summary.get('total_users', 0):,}")
+                            st.metric("Total Events", f"{data_summary.get('total_events', 0):,}")
+                        
+                        with metric_col2:
+                            st.metric("Total Revenue", f"${data_summary.get('revenue_total', 0):,.2f}")
+                            st.metric("Avg Session Duration", f"{data_summary.get('avg_session_duration', 0):.1f} min")
+                        
+                        with metric_col3:
+                            if 'user_segments' in data_summary:
+                                segments = data_summary['user_segments']
+                                st.metric("High Activity Users", segments.get('high_activity', 0))
+                                st.metric("Medium Activity Users", segments.get('medium_activity', 0))
+                        
+                        # Top Events Chart
+                        if data_summary.get('top_events'):
+                            st.subheader("🔥 Top Events")
+                           
                             
-                            with metric_col1:
-                                st.metric("Total Users", f"{data_summary.get('total_users', 0):,}")
-                                st.metric("Total Events", f"{data_summary.get('total_events', 0):,}")
-                            
-                            with metric_col2:
-                                st.metric("Total Revenue", f"${data_summary.get('revenue_total', 0):,.2f}")
-                                st.metric("Avg Session Duration", f"{data_summary.get('avg_session_duration', 0):.1f} min")
-                            
-                            with metric_col3:
-                                if 'user_segments' in data_summary:
-                                    segments = data_summary['user_segments']
-                                    st.metric("High Activity Users", segments.get('high_activity', 0))
-                                    st.metric("Medium Activity Users", segments.get('medium_activity', 0))
-                            
-                            # Top Events Chart
-                            if data_summary.get('top_events'):
-                                st.subheader("🔥 Top Events")
-                                events_df = pd.DataFrame(list(data_summary['top_events'].items()), 
-                                                       columns=['Event', 'Count'])
-                                fig_events = px.bar(events_df, x='Event', y='Count', 
-                                                  title="Most Frequent Events")
-                                fig_events.update_layout(height=400)
-                               
                         else:
-                            st.error("Error creating data summary for AI analysis")
+                            st.warning("No event data available for analysis")
+                    
+                    else:
+                        st.error("Error creating data summary for AI analysis")
                     
                     with col2:
                         st.subheader("🚀 Generate AI Insights")
@@ -1762,21 +2151,21 @@ def main():
                         
                         with col1:
                             st.write("**All Users**")
-                            funnel_fig_all = create_funnel_chart(df, 'all')
+                            funnel_fig_all = create_funnel_chart(df, 'all', adapty_df)
                             st.plotly_chart(funnel_fig_all, use_container_width=True)
                         
                         with col2:
                             st.write("**New Users**")
-                            funnel_fig_new = create_funnel_chart(df, 'new')
+                            funnel_fig_new = create_funnel_chart(df, 'new', adapty_df)
                             st.plotly_chart(funnel_fig_new, use_container_width=True)
                         
                         with col3:
                             st.write("**Existing Users**")
-                            funnel_fig_existing = create_funnel_chart(df, 'existing')
+                            funnel_fig_existing = create_funnel_chart(df, 'existing', adapty_df)
                             st.plotly_chart(funnel_fig_existing, use_container_width=True)
                     else:
                         # Show single selected funnel
-                        funnel_fig = create_funnel_chart(df, segment_option)
+                        funnel_fig = create_funnel_chart(df, segment_option, adapty_df)
                         st.plotly_chart(funnel_fig, use_container_width=True)
                     
                     st.divider()
@@ -2112,34 +2501,45 @@ def main():
                     st.divider()
                     
                     st.subheader("Churn Risk Analysis")
-                    # Calculate days since last activity - FIXED TIMEZONE ISSUE
-                    last_activity = df.groupby('userid')['datetimeutc'].max().reset_index()
-                    last_activity.columns = ['userid', 'last_seen']
-                    # Use timezone-naive datetime
-                    current_time = pd.Timestamp.now().tz_localize(None)
-                    last_activity['days_since_last_seen'] = (current_time - last_activity['last_seen']).dt.days
                     
-                    # Merge with user metrics
-                    churn_data = user_metrics.merge(last_activity[['userid', 'days_since_last_seen']], on='userid', how='left')
-                    churn_data['churn_risk'] = churn_data['days_since_last_seen'].apply(
-                        lambda x: 'High' if x > 7 else 'Medium' if x > 3 else 'Low'
-                    )
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        churn_counts = churn_data['churn_risk'].value_counts()
-                        fig = px.bar(x=churn_counts.index, y=churn_counts.values, 
-                                    color=churn_counts.index,
-                                    color_discrete_map={'Low': 'green', 'Medium': 'orange', 'High': 'red'})
-                        fig.update_layout(height=400, title="Churn Risk Distribution", showlegend=False)
-                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    with col2:
-                        high_risk_users = churn_data[churn_data['churn_risk'] == 'High'].nlargest(10, 'total_events')
-                        st.write("High Risk Users (Top 10 by Activity)")
-                        st.dataframe(high_risk_users[['userid', 'total_sessions', 'total_events', 'days_since_last_seen']], 
-                                   use_container_width=True)
+                    try:
+                        if user_metrics.empty or 'userid' not in user_metrics.columns:
+                            st.warning("No user metrics available for churn analysis.")
+                        else:
+                            # Calculate days since last activity - FIXED TIMEZONE ISSUE
+                            last_activity = df.groupby('userid')['datetimeutc'].max().reset_index()
+                            last_activity.columns = ['userid', 'last_seen']
+                            # Use timezone-naive datetime
+                            current_time = pd.Timestamp.now().tz_localize(None)
+                            last_activity['days_since_last_seen'] = (current_time - last_activity['last_seen']).dt.days
+                            
+                            # Merge with user metrics
+                            churn_data = user_metrics.merge(last_activity[['userid', 'days_since_last_seen']], on='userid', how='left')
+                            churn_data['churn_risk'] = churn_data['days_since_last_seen'].apply(
+                                lambda x: 'High' if x > 7 else 'Medium' if x > 3 else 'Low'
+                            )
+                            
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                churn_counts = churn_data['churn_risk'].value_counts()
+                                fig = px.bar(x=churn_counts.index, y=churn_counts.values, 
+                                            color=churn_counts.index,
+                                            color_discrete_map={'Low': 'green', 'Medium': 'orange', 'High': 'red'})
+                                fig.update_layout(height=400, title="Churn Risk Distribution", showlegend=False)
+                                st.plotly_chart(fig, use_container_width=True)
+                            
+                            with col2:
+                                high_risk_users = churn_data[churn_data['churn_risk'] == 'High'].nlargest(10, 'total_events')
+                                st.write("High Risk Users (Top 10 by Activity)")
+                                if not high_risk_users.empty:
+                                    st.dataframe(high_risk_users[['userid', 'total_sessions', 'total_events', 'days_since_last_seen']], 
+                                               use_container_width=True)
+                                else:
+                                    st.info("No high-risk users found.")
+                    except Exception as e:
+                        st.error(f"Error in churn risk analysis: {str(e)}")
+                        st.info("Please check that user data is properly loaded.")
                     
                     st.divider()
                     
@@ -2322,54 +2722,57 @@ def main():
                     top_events = top_events.sort_values('count', ascending=False).head(20)
                     st.dataframe(top_events, use_container_width=True)
     
-    else:
-        # Welcome screen
-        st.info("Welcome to the Analytics Dashboard! Upload your CSV files to begin analysis.")
-        
+        else:
+            # Error handling for JSON data loading
+            st.error("⚠️ Unable to load JSON data sources. Please check the data files.")
+            
         st.markdown("""
-        ### Getting Started
+        ### JSON Data Integration System
         
-        1. **Upload Data**: Use the sidebar to upload your app events CSV file
-        2. **Optional**: Upload payment events CSV for monetization analytics
-        3. **Configure**: Set your preferred session timeout and filters
-        4. **Explore**: Navigate through the tabs to view different analytics
+        This dashboard now uses integrated JSON data sources for comprehensive user analytics:
+        
+        **Required JSON Files:**
+        - `offline_data/app_event.json` - App events with user IDs for complete tracking
+        - `offline_data/adapty_event.json` - Revenue events from Adapty platform
+        - `offline_data/revenue.json` - Customer revenue data with user correlation
         
         ### Features
         
-        - **Overview**: Executive dashboard with key metrics and trends
-        - **User Journey**: Flow analysis and conversion funnels
-        - **Features**: Feature usage and engagement analytics
-        - **Monetization**: Revenue analytics and product performance
-        - **Segmentation**: User clustering and behavior patterns
-        - **User Explorer**: Deep dive into individual user behavior
-        - **Advanced**: Anomaly detection and churn prediction
-        - **Export**: Download processed data and reports
+        - **Automatic Data Correlation**: Revenue events linked to user data
+        - **User Revenue Tracking**: Using customer_userid and adapty profile ID
+        - **Complete Journey Analysis**: App events provide full user behavior tracking
+        - **Integrated Analytics**: All data sources work together seamlessly
         
-        ### Data Requirements
+        ### Data Integration Benefits
         
-        Your CSV should contain these columns:
-        - `userid`: User identifier
-        - `datetimeutc`: Event timestamp
-        - `name`: Event name
-        - `category`: Event category
-        - `deviceid`: Device identifier
-        - `analyticsdata`: JSON data (for payment events)
+        - **Revenue Attribution**: Properly attribute revenue to specific users
+        - **Complete User Profiles**: Combine app behavior with revenue data
+        - **Advanced Analytics**: Cross-reference user actions with monetization
+        - **Real-time Processing**: JSON data loads faster than CSV uploads
         """)
         
         st.divider()
         
-        st.subheader("Sample Data Format")
+        col1, col2 = st.columns(2)
         
-        sample_data = pd.DataFrame({
-            'analyticsid': [1, 2, 3],
-            'userid': [12345, 12345, 67890],
-            'deviceid': ['abc123-ios', 'abc123-ios', 'def456-android'],
-            'category': ['app_event', 'app_event', 'adapty_event'],
-            'name': ['open_HomeScreen', 'click_Feature', 'payment_success'],
-            'datetimeutc': ['2025-09-01 10:30:00', '2025-09-01 10:31:00', '2025-09-01 11:00:00']
+        with col1:
+            if st.button("🔄 Retry Loading Data", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
+        
+        with col2:
+            st.info("💡 Ensure all JSON files are in the offline_data directory")
+        
+        st.subheader("Expected JSON Data Sources")
+        
+        data_sources = pd.DataFrame({
+            'File': ['app_event.json', 'adapty_event.json', 'revenue.json'],
+            'Purpose': ['User app interactions', 'Revenue events', 'Customer-revenue mapping'],
+            'Key Fields': ['userid, name, datetimeutc', 'event data, timestamps', 'customer_userid, adapty_profile_id'],
+            'Status': ['❌ Not loaded', '❌ Not loaded', '❌ Not loaded']
         })
         
-        st.dataframe(sample_data, use_container_width=True)
+        st.dataframe(data_sources, use_container_width=True)
 
 if __name__ == "__main__":
     # Check authentication before showing dashboard

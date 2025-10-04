@@ -7,3 +7,20 @@ openpyxl==3.1.2
 python-dotenv==1.0.0
 requests==2.31.0
 reportlab==4.0.4
+
+# High-Performance Libraries for Large Data Processing
+pysimdjson==5.0.2
+polars==0.20.2
+pyarrow==14.0.1
+dask[complete]==2023.10.1
+numba==0.58.1
+modin[all]==0.24.1
+
+# Memory and Performance Optimization
+psutil==5.9.6
+memory-profiler==0.61.0
+line-profiler==4.1.1
+
+# Async and Concurrent Processing
+aiohttp==3.9.1
+asyncio-throttle==1.0.2
