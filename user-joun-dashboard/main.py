@@ -1509,8 +1509,10 @@ def main():
     st.title("📊 Astrocoach User Analytics Dashboard")
     st.markdown("### Comprehensive User Behavior & Revenue Analytics")
     
-    # CSV file path
-    CSV_FILE_PATH = "analytics.csv"
+    # CSV file path - ensure it's always relative to the script location for deployment
+    import os
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    CSV_FILE_PATH = os.path.join(script_dir, "analytics.csv")
     
     # Sidebar
     with st.sidebar:
