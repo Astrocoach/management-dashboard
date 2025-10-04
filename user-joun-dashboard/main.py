@@ -386,6 +386,10 @@ def reconstruct_sessions(df, timeout_minutes=30):
     df['new_session'] = (df['time_diff'] > pd.Timedelta(minutes=timeout_minutes)) | df['time_diff'].isna()
     df['session_id'] = df.groupby('userid')['new_session'].cumsum()
     
+    # Convert time_diff to numeric minutes to avoid serialization issues
+    df['time_diff_minutes'] = df['time_diff'].dt.total_seconds() / 60
+    df = df.drop('time_diff', axis=1)  # Remove the original timedelta column
+    
     return df
 
 @st.cache_data
@@ -2298,7 +2302,15 @@ def main():
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        csv_events = df.to_csv(index=False).encode('utf-8')
+                        # Convert any timedelta/duration columns to numeric for export
+                        events_export = df.copy()
+                        for col in events_export.columns:
+                            if events_export[col].dtype == 'timedelta64[ns]':
+                                events_export[col] = events_export[col].dt.total_seconds() / 60  # Convert to minutes
+                            elif hasattr(events_export[col].dtype, 'name') and 'timedelta' in str(events_export[col].dtype):
+                                events_export[col] = pd.to_numeric(events_export[col], errors='coerce')
+                        
+                        csv_events = events_export.to_csv(index=False).encode('utf-8')
                         st.download_button(
                             label="Download Events Data",
                             data=csv_events,
@@ -2308,7 +2320,15 @@ def main():
                     
                     with col2:
                         if not session_metrics.empty:
-                            csv_sessions = session_metrics.to_csv(index=False).encode('utf-8')
+                            # Convert any timedelta/duration columns to numeric for export
+                            session_export = session_metrics.copy()
+                            for col in session_export.columns:
+                                if session_export[col].dtype == 'timedelta64[ns]':
+                                    session_export[col] = session_export[col].dt.total_seconds() / 60  # Convert to minutes
+                                elif hasattr(session_export[col].dtype, 'name') and 'timedelta' in str(session_export[col].dtype):
+                                    session_export[col] = pd.to_numeric(session_export[col], errors='coerce')
+                            
+                            csv_sessions = session_export.to_csv(index=False).encode('utf-8')
                             st.download_button(
                                 label="Download Session Metrics",
                                 data=csv_sessions,
@@ -2318,7 +2338,15 @@ def main():
                     
                     with col3:
                         if not user_metrics.empty:
-                            csv_users = user_metrics.to_csv(index=False).encode('utf-8')
+                            # Convert any timedelta/duration columns to numeric for export
+                            users_export = user_metrics.copy()
+                            for col in users_export.columns:
+                                if users_export[col].dtype == 'timedelta64[ns]':
+                                    users_export[col] = users_export[col].dt.total_seconds() / 60  # Convert to minutes
+                                elif hasattr(users_export[col].dtype, 'name') and 'timedelta' in str(users_export[col].dtype):
+                                    users_export[col] = pd.to_numeric(users_export[col], errors='coerce')
+                            
+                            csv_users = users_export.to_csv(index=False).encode('utf-8')
                             st.download_button(
                                 label="Download User Segments",
                                 data=csv_users,
